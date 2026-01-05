@@ -23,32 +23,49 @@ engine = create_engine(DATABASE_URL)
 # === MCP Server Tools ===
 
 @mcp.tool()
-def fetch_salesperson_transactions_count():
+def fetch_raw_transaction_data():
     """
-    Fetch the count of transactions per salesperson.
-    Returns a list of dictionaries containing salesperson names and their total transaction counts.
+    Fetch the raw, unstandardized transaction counts grouped by the salesman_name column.
+    This provides the messy data needed for AI-driven standardization.
     """
-    # We group by salesman_name to aggregate the data
     query = text("""
         SELECT 
             salesman_name, 
             COUNT(*) as transaction_count 
         FROM transactions 
         GROUP BY salesman_name
-        ORDER BY transaction_count DESC
     """)
     
     with engine.connect() as connection:
         result = connection.execute(query)
-        # Convert the result rows into a list of dictionaries for the MCP response
-        data = [
-            {"salesman_name": row.salesman_name, "count": row.transaction_count} 
+        return [
+            {"raw_name": row.salesman_name, "count": row.transaction_count} 
             for row in result
         ]
+
+@mcp.prompt()
+def generate_cleaned_sales_report() -> str:
+    """
+    Instructions for the AI to fetch raw data, standardize salesperson names,
+    and aggregate counts for a final performance report.
+    """
+    raw_data = fetch_raw_transaction_data()
+
+    return f"""
+    I need a standardized Sales Performance Report. The database contains messy entries.
     
-    return data
+    DATA TO ANALYZE:
+    {raw_data}
 
-
+    YOUR LOGIC REQUIREMENTS:
+    1. **Normalize Names**: Group similar names (e.g., 'GLADYS', 'PS100 Gladys', 'PS 100 Gladys' should all be 'GLADYS'). Remove numeric codes like '310' or '214'.
+    2. **Handle Multi-Salesman Entries**: For entries like 'GLADY / WILSON', split the transaction count and add the full amount to BOTH individuals.
+    3. **Consistency**: Use uppercase for all final names.
+    
+    OUTPUT FORMAT:
+    Provide a Markdown table with columns: [Salesperson, Total Transactions].
+    Include a summary of which raw names were merged into which standardized names.
+    """
 
 # Run the MCP server
 if __name__ == "__main__":
