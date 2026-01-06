@@ -22,6 +22,7 @@ engine = create_engine(DATABASE_URL)
 
 # === MCP RESOURCES (Static Reference Data) ===
 
+# PRODUCTS RESOURCE
 @mcp.resource("sales://official_products")
 def get_official_product_list() -> str:
     """
@@ -42,6 +43,7 @@ def get_official_product_list() -> str:
         result = conn.execute(query)
         return "OFFICIAL PRODUCT REGISTRY:\n" + "\n".join([f"- {row.prodname}" for row in result])
 
+# USERS RESOURCE
 @mcp.resource("users://official_directory")
 def get_official_user_list() -> str:
     """
@@ -61,6 +63,33 @@ def get_official_user_list() -> str:
     with engine.connect() as conn:
         result = conn.execute(query)
         return "OFFICIAL USER DIRECTORY:\n" + "\n".join([f"- [ID: {row.id}] [{row.username}] {row.name}" for row in result])
+
+@mcp.resource("clinics://official_registry")
+def get_official_clinic_list() -> str:
+    """
+    Retrieves the official registry of clinics with detailed location data.
+    
+    Includes Address, City, and Province to help the AI distinguish between 
+    different branches of the same clinic vs. duplicate entries of the same location.
+
+    Returns:
+        str: A formatted string linking IDs to Name and Location.
+             
+             Format:
+             OFFICIAL CLINIC REGISTRY:
+             - [ID: 1] Name: Klinik Alpha | Loc: Jl. Merdeka, City: JKT, Prov: DKI
+             - [ID: 2] Name: Klinik Alpha | Loc: Jl. Sudirman, City: BDG, Prov: JBR
+    """
+    # Added address, citycode, provcode
+    query = text("SELECT id, clinicname, address, citycode, provcode FROM clinics")
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        # Format the location data into a "signature" for the AI to analyze
+        return "OFFICIAL CLINIC REGISTRY:\n" + "\n".join([
+            f"- [ID: {row.id}] Name: {row.clinicname} | Loc: {row.address}, City: {row.citycode}, Prov: {row.provcode}" 
+            for row in result
+        ])
 
 # === MCP TOOLS (Dynamic Data Fetching) ===
 
@@ -118,6 +147,24 @@ def fetch_raw_visit_plans() -> str:
     with engine.connect() as conn:
         result = conn.execute(query)
         return "RAW PLAN LOG:\n" + "\n".join([f"- UserID {row.userid}: {row.c} visits" for row in result])
+
+@mcp.tool()
+def fetch_raw_visit_plans_by_clinic() -> str:
+    """
+    Retrieves a snapshot of planned visits grouped by the Clinic ID (foreign key).
+
+    Returns:
+        str: A formatted log of Clinic IDs and their plan counts.
+             
+             Format:
+             RAW CLINIC VISIT LOG:
+             - ClinicID 101: 5 visits
+    """
+    query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        return "RAW CLINIC VISIT LOG:\n" + "\n".join([f"- ClinicID {row.cliniccode}: {row.c} visits" for row in result])
 
 # === MCP PROMPTS (Agent Instructions) ===
 
@@ -227,7 +274,7 @@ def generate_cleaned_product_report() -> str:
     """
 
 @mcp.prompt()
-def generate_planned_visits_report() -> str:
+def generate_planned_visits_report_by_sales() -> str:
     """
     Generates a report showing planned visits per salesperson.
     
@@ -259,6 +306,53 @@ def generate_planned_visits_report() -> str:
     OUTPUT FORMAT:
     Provide a Markdown table with columns: 
     | Salesperson Name | Total Planned Visits |
+    """
+
+@mcp.prompt()
+def generate_planned_visits_report_by_clinic() -> str:
+    """
+    Generates a smart report of planned visits that merges duplicate clinic entries 
+    while distinguishing different branches.
+
+    Injects:
+    1. `clinics://official_registry` (Resource) containing Name + Location Data.
+    2. `fetch_raw_visit_plans_by_clinic` (Tool) containing raw counts by ID.
+
+    Returns:
+        str: A prompt instructing the AI to perform entity resolution and aggregation.
+    """
+    raw_plans = fetch_raw_visit_plans_by_clinic()
+    official_clinics = get_official_clinic_list()
+
+    return f"""
+    I need a Planned Visits Report grouped by Clinic.
+    
+    ### REFERENCE DATA (Clinic Registry with Location)
+    {official_clinics}
+
+    ### RAW DATA (Plan Counts by Clinic ID)
+    {raw_plans}
+
+    ### YOUR LOGIC REQUIREMENTS (Entity Resolution):
+    You must decide which IDs represent the same real-world clinic and which are different.
+    
+    **Step 1: Analyze the Reference Data**
+    - **CASE 1 & 2 (Merge Target):** If multiple IDs have the SAME (or fuzzy matched) Name AND similar Location (Address/City/Prov), treat them as ONE clinic.
+      - *Example:* 'Klinik Permana' (ID 1) and 'Klinik Permana Sari' (ID 2) at the same address should be merged.
+    - **CASE 3 (Split Target):** If multiple IDs have the SAME Name but COMPLETELY DIFFERENT Locations (City/Prov), treat them as DIFFERENT clinics.
+      - *Example:* 'Clinic Kimia' in Jakarta vs 'Clinic Kimia' in Bali are different. Keep them separate.
+
+    **Step 2: Aggregate Counts**
+    - Look at the `RAW DATA`. Map every `ClinicID` to your resolved entities from Step 1.
+    - If you merged IDs (e.g., ID 1 and ID 2), sum their visit counts together.
+
+    ### OUTPUT FORMAT:
+    Provide a Markdown table with these specific columns: 
+    | Clinic ID(s) | Clinic Name | Number of Visits |
+    | :--- | :--- | :--- |
+    | 1, 5, 9 | Klinik Permana Sari (Merged) | 15 |
+    | 2 | Clinic Kimia (Jakarta Branch) | 4 |
+    | 3 | Clinic Kimia (Bali Branch) | 8 |
     """
 
 # Run the MCP server

@@ -20,7 +20,7 @@ sql_path = os.path.join(os.path.dirname(__file__), 'real_data.sql')
 try:
     with open(sql_path, 'r', encoding='utf-8') as f:
         sql_content = f.read()
-
+ 
     queries = [q.strip() for q in sql_content.split(';') if q.strip()]
 
     print(f"Found {len(queries)} queries. Starting execution...")
