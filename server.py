@@ -1,5 +1,8 @@
+import difflib
 import os
+import re
 from dotenv import load_dotenv
+from collections import defaultdict
 from sqlalchemy import create_engine, text
 
 # Import FastMCP
@@ -19,6 +22,69 @@ DB_NAME = os.getenv('DB_NAME')
 
 DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
 engine = create_engine(DATABASE_URL)
+
+# PYTHON HELPER FUNCTIONS
+
+def normalize_name(text: str) -> str:
+    """
+    Strips titles, degrees, and punctuation to find the 'Core Name'.
+    Handles complex variations like 'M.Kes', 'Cert. Ort', and 'Sp. Ort'.
+    """
+    if not text: return ""
+    
+    # Lowercase for consistency
+    core = text.lower()
+    
+    # --- PHASE A: Remove Complex/Compound Titles (Order Matters) ---
+    # We use Regex to catch "spaced" titles before removing punctuation
+    
+    # 1. Handle "Sp. Ort" / "Sp Ort" / "Sp.Orto"
+    core = re.sub(r'\bsp[\s\.]*ort[a-z]*\b', '', core)
+    
+    # 2. Handle "M.Kes" / "M Kes" / "M. Kes"
+    core = re.sub(r'\bm[\s\.]*kes\b', '', core)
+    
+    # 3. Handle "Cert. Ort" / "Cert Ort"
+    core = re.sub(r'\bcert[\s\.]*ort[a-z]*\b', '', core)
+    
+    # --- PHASE B: Remove Punctuation ---
+    # Replace dots, commas, dashes with spaces so "drg.name" becomes "drg name"
+    core = re.sub(r'[.,\-]', ' ', core)
+    
+    # --- PHASE C: Remove Standalone Titles ---
+    # List of titles to strip (must be whole words)
+    titles = {
+        'drg', 'dr', 'drs', 'dra', 
+        'sp', 'spd', 'ort', 'orto', 'mm', 'mkes', 
+        'cert', 'fisid', 'kg', 'mha', 'sph', 'amd', 'skg'
+    }
+    
+    tokens = core.split()
+    clean_tokens = [t for t in tokens if t not in titles]
+    
+    return " ".join(clean_tokens)
+
+def normalize_phone(phone: str) -> str:
+    if not phone or str(phone).lower() in ['null', 'none', 'nan']:
+        return None
+    
+    # Remove non-digits
+    clean_num = re.sub(r'\D', '', str(phone))
+    
+    # Handle Country Code (+62 -> 0)
+    if clean_num.startswith('62'):
+        clean_num = '0' + clean_num[2:]
+        
+    return clean_num
+
+def get_fuzzy_match(name, existing_names, threshold=0.9):
+    """
+    Checks if 'name' is similar to any key in 'existing_names' (Case 3 Fix).
+    Uses difflib.SequenceMatcher.
+    """
+    # Quick optimization: check simple containment or very high similarity
+    matches = difflib.get_close_matches(name, existing_names, n=1, cutoff=threshold)
+    return matches[0] if matches else None
 
 # === MCP RESOURCES (Static Reference Data) ===
 
@@ -92,6 +158,7 @@ def get_official_clinic_list() -> str:
         ])
 
 # CUSTOMERS RESOURCE
+'''
 @mcp.resource("customers://official_registry")
 def get_official_customer_list() -> str:
     """
@@ -117,6 +184,7 @@ def get_official_customer_list() -> str:
             f"- [ID: {row.id}] Name: {row.custname} | Phone: {row.phone}" 
             for row in result
         ])
+'''
 
 # === MCP TOOLS (Dynamic Data Fetching) ===
 
@@ -194,22 +262,97 @@ def fetch_raw_visit_plans_by_clinic() -> str:
         return "RAW CLINIC VISIT LOG:\n" + "\n".join([f"- ClinicID {row.cliniccode}: {row.c} visits" for row in result])
 
 @mcp.tool()
-def fetch_raw_visit_plans_by_customer() -> str:
+def fetch_deduplicated_visit_report() -> str:
     """
-    Retrieves a snapshot of planned visits grouped by the Customer ID (foreign key).
-
-    Returns:
-        str: A formatted log of Customer IDs and their plan counts.
-            
-            Format:
-            RAW CUSTOMER VISIT LOG:
-            - CustID 501: 3 visits
+    Retrieves a consolidated report of planned visits.
+    
+    This tool performs internal "Entity Resolution":
+    1. Fetches raw visit counts.
+    2. Fetches customer details (Name + Phone).
+    3. Merges customers based on Fuzzy Name Matching AND Phone number matching.
+    4. Aggregates the visit counts.
     """
-    query = text("SELECT custcode, COUNT(*) as c FROM plans GROUP BY custcode")
+    # 1. Fetch Visit Counts
+    visit_counts = defaultdict(int)
+    query_plans = text("SELECT custcode, COUNT(*) as c FROM plans GROUP BY custcode")
     
     with engine.connect() as conn:
-        result = conn.execute(query)
-        return "RAW CUSTOMER VISIT LOG:\n" + "\n".join([f"- CustID {row.custcode}: {row.c} visits" for row in result])
+        result = conn.execute(query_plans)
+        for row in result:
+            visit_counts[str(row.custcode)] = row.c
+
+    # 2. Fetch Customer Details
+    customers = []
+    query_cust = text("SELECT id, custname, phone FROM customers")
+    
+    with engine.connect() as conn:
+        result = conn.execute(query_cust)
+        for row in result:
+            customers.append({
+                "id": str(row.id),
+                "name": row.custname,
+                "phone": row.phone
+            })
+
+    # 3. ROBUST GROUPING (Regex + Fuzzy Match)
+    grouped_map = defaultdict(list)
+    
+    for cust in customers:
+        core_name = normalize_name(cust['name'])
+        
+        # --- FUZZY MATCH LOGIC ---
+        if not core_name:
+            continue
+
+        # Optimization: Only compare with keys starting with the same letter
+        potential_matches = [k for k in grouped_map.keys() if k and k[0] == core_name[0]]
+        
+        # Check if we already have a key similar to this core_name
+        match = get_fuzzy_match(core_name, potential_matches, threshold=0.92)
+        
+        if match:
+            # If match found, use the existing key (merging them)
+            grouped_map[match].append(cust)
+        else:
+            # If no match, create a new entry
+            grouped_map[core_name].append(cust)
+
+    # 4. PHONE WILDCARD MERGE & AGGREGATION
+    final_rows = []
+
+    for core_name, entries in grouped_map.items():
+        # ### EDITED: Removed all phone bucket logic.
+        # Previously we split 'entries' into 'phone_buckets'.
+        # Now we treat ALL 'entries' in this group as the same person.
+        
+        # Collect all IDs in this group
+        ids = [x['id'] for x in entries]
+        
+        # Sum the visit counts for ALL these IDs
+        total_visits = sum(visit_counts.get(cust_id, 0) for cust_id in ids)
+        
+        # Pick the longest name as the "Display Name" (usually contains titles)
+        display_name = max((x['name'] for x in entries), key=len)
+        
+        # Only add to report if visits exist (optional, removes clutter)
+        if total_visits > 0:
+            final_rows.append({
+                "ids": "; ".join(ids),
+                "name": display_name,
+                "count": total_visits
+            })
+
+    # Sort by visit count descending
+    final_rows.sort(key=lambda x: x['count'], reverse=True)
+
+    output = "CONSOLIDATED VISIT REPORT (Auto-Deduplicated):\n"
+    output += "| Customer ID(s) | Customer Name | Number of Visits |\n"
+    output += "| :--- | :--- | :--- |\n"
+    
+    for row in final_rows:
+        output += f"| {row['ids']} | {row['name']} | {row['count']} |\n"
+        
+    return output
 
 # === MCP PROMPTS (Agent Instructions) ===
 
@@ -398,62 +541,22 @@ def generate_planned_visits_report_by_clinic() -> str:
 @mcp.prompt()
 def generate_planned_visits_report_by_customer() -> str:
     """
-    Generates a smart report of planned visits that merges duplicate customer entries 
-    using sophisticated Name Normalization and Phone verification.
-
-    Injects:
-    1. `customers://official_registry` (Resource) containing Name + Phone.
-    2. `fetch_raw_visit_plans_by_customer` (Tool) containing raw counts by ID.
-
-    Returns:
-        str: A prompt instructing the AI to strip titles (drg, Sp.Ort) and merge NULL phones.
+    Generates a prompt that instructs the LLM to retrieve a pre-calculated, deduplicated visit report.
+    This prompt relies on the `fetch_deduplicated_visit_report` tool for all logic.
     """
-    raw_plans = fetch_raw_visit_plans_by_customer()
-    official_customers = get_official_customer_list()
-
-    return f"""
+    return """
     I need a Planned Visits Report grouped by Customer.
     
-    ### REFERENCE DATA (Customer Registry with Phone)
-    {official_customers}
-
-    ### RAW DATA (Plan Counts by Customer ID)
-    {raw_plans}
-
-    ### CRITICAL FORMATTING RULE (PREVENT CSV BREAKAGE):
-    - **IF** you generate any intermediate data, exports, or CSV text, **YOU MUST USE SEMICOLON (;)** as the delimiter.
-    - **NEVER** use commas (,) as a delimiter, as this will split names like "Name, Sp.Ort".
-
-    ### YOUR LOGIC REQUIREMENTS (Entity Resolution):
-    You must decide which IDs represent the same real-world customer.
+    Please run the tool `fetch_deduplicated_visit_report`.
     
-    **Step 1: Name Normalization (The "Core Name" Strategy)**
-    Before comparing names, strip away all titles, degrees, and punctuation to find the "Core Name".
-    - **Ignore/Remove these titles:** 'drg', 'dr', 'sp', 'ort', 'orto', 'mm', 'mkes', 'cert', 'fisid'.
-    - **Ignore punctuation:** Remove periods (.), commas (,), and extra spaces.
-    - *Example:* "drg. Jonathan Krisetya, Sp. Ort" -> Core Name: "jonathan krisetya"
-    - *Example:* "Jonathan Krisetya" -> Core Name: "jonathan krisetya"
-    - **Result:** These two entries now MATCH.
-
-    **Step 2: Phone Number Verification (The "Wildcard" Rule)**
-    Compare the Phone Numbers for entries with matching "Core Names":
-    - **Match:** If Phone A == Phone B.
-    - **Match (Wildcard):** If one phone is VALID (e.g., '0812...') and the other is NULL/Empty/'null', **TREAT AS A MATCH**. (Assume the entry with the phone number is the master record).
-    - **No Match:** If Phone A != Phone B (and neither is null). Treat as different people (Case 3).
-
-    **Step 3: Aggregate Counts**
-    - Map every `CustID` from the `RAW DATA` to your resolved entities.
-    - If you merged IDs (e.g. ID 315 and ID 679), sum their visit counts.
-    - Use the **Most Complete Name** for the final display (the one with titles/degrees).
-
-    ### OUTPUT FORMAT:
-    Provide a Markdown table with these specific columns: 
-    | Customer ID(s) | Customer Name | Number of Visits |
-    | :--- | :--- | :--- |
-    | 315; 679 | drg. Jonathan Krisetya, Sp. Ort (Merged) | 25 |
-    | 502 | Budi Santoso | 8 |
+    This tool has built-in logic to:
+    1. Clean and normalize messy names (stripping titles like 'drg', 'Sp.Ort').
+    2. Merge duplicate customer entries based on Fuzzy Name Matching (typo tolerance).
+    3. Aggregate the visit counts for these merged identities automatically.
+    
+    Output the result exactly as the tool returns it (Markdown Table).
     """
 
 # Run the MCP server
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="sse")

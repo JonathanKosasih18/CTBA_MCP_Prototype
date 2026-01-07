@@ -12,5 +12,6 @@ wheels/
 .python-version
 pyproject.toml
 
-# Raw Data
+# Data
 u738159060_bam.sql
+customers.csv
