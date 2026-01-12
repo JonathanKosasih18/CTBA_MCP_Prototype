@@ -647,7 +647,7 @@ def fetch_visit_plans_by_salesman() -> str:
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
     md = "PLANNED VISITS REPORT (Grouped by Salesman):\n"
-    md += "| Sales User ID | Sales Name | Visit Count |\n"
+    md += "| Sales User ID | Salesman Name | Visit Count |\n"
     md += "| :--- | :--- | :--- |\n"
     
     for row in output_rows:
@@ -828,6 +828,181 @@ def fetch_visit_plans_by_clinic() -> str:
         
     return md
 
+@mcp.tool()
+def fetch_report_counts_by_salesman() -> str:
+    """
+    Retrieves the count of completed reports grouped by Salesman.
+    
+    Logic:
+    1. JOINS 'reports' to 'plans' (on reports.idplan = plans.id).
+    2. Groups by 'plans.userid'.
+    3. Maps User ID to Official Name.
+    
+    Columns: | Sales User ID | Salesman Name | Total Reports |
+    """
+    # 1. Load Source of Truth
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    # 2. Fetch Report Counts via Join
+    # We join reports -> plans to get the userid associated with the report
+    query = text("""
+        SELECT p.userid, COUNT(r.id) as c 
+        FROM reports r
+        JOIN plans p ON r.idplan = p.id
+        GROUP BY p.userid
+    """)
+    
+    output_rows = []
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        for row in result:
+            u_id = str(row.userid)
+            count = row.c
+            
+            # 3. Lookup User Details
+            user = id_map.get(u_id)
+            
+            if user:
+                output_rows.append({
+                    "user_id": user['code'], 
+                    "name": user['name'],    
+                    "count": count
+                })
+            else:
+                output_rows.append({
+                    "user_id": f"ID {u_id}",
+                    "name": "[Unknown User]",
+                    "count": count
+                })
+                
+    # 4. Sort and Format
+    output_rows.sort(key=lambda x: x['count'], reverse=True)
+    
+    md = "COMPLETED REPORTS BY SALESMAN:\n"
+    md += "| Sales User ID | Salesman Name | Total Reports |\n"
+    md += "| :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
+        
+    return md
+
+@mcp.tool()
+def fetch_comprehensive_salesman_performance() -> str:
+    """
+    Retrieves a 360-degree performance report for Salesmen.
+    Aggregates Plans, Reports (Visits), and Transactions into a single view.
+    
+    Metrics:
+    - Plans: From 'plans' table.
+    - Visits: From 'reports' table (linked to plans).
+    - Transactions: From 'transactions' table (deduplicated & resolved).
+    - Ratios: Calculated fields (Visits/Plans and Transactions/Visits).
+    """
+    # 1. Load Source of Truth
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+
+    # Master Data Structure: { user_id: { plans: 0, reports: 0, transactions: 0 } }
+    master_data = defaultdict(lambda: {'plans': 0, 'reports': 0, 'transactions': 0})
+
+    # --- METRIC 1: PLANS ---
+    # Source: plans table (Linked directly to users)
+    with engine.connect() as conn:
+        q_plans = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
+        for row in conn.execute(q_plans):
+            uid = str(row.userid)
+            if uid in id_map:
+                master_data[uid]['plans'] += row.c
+
+    # --- METRIC 2: REPORTS (VISITS) ---
+    # Source: reports table (Linked to plans -> users)
+    with engine.connect() as conn:
+        q_reports = text("""
+            SELECT p.userid, COUNT(r.id) as c 
+            FROM reports r
+            JOIN plans p ON r.idplan = p.id
+            GROUP BY p.userid
+        """)
+        for row in conn.execute(q_reports):
+            uid = str(row.userid)
+            if uid in id_map:
+                master_data[uid]['reports'] += row.c
+
+    # --- METRIC 3: TRANSACTIONS ---
+    # Source: transactions table (Messy names -> Python Resolution -> User ID)
+    with engine.connect() as conn:
+        q_trans = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+        for row in conn.execute(q_trans):
+            raw_field = str(row.salesman_name)
+            count = row.c
+            
+            # Reuse logic from deduplicated sales report
+            parts = re.split(r'[/\&,]', raw_field)
+            for part in parts:
+                part = part.strip()
+                if not part: continue
+                
+                # Resolve Identity
+                resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
+                
+                if resolved_id:
+                    master_data[resolved_id]['transactions'] += count
+                # Note: Unmatched transactions ([NO CODE]) are excluded from this specific 
+                # report because they don't have a User ID/Username to fit the columns.
+
+    # --- FORMAT OUTPUT ---
+    output_rows = []
+    
+    for uid, stats in master_data.items():
+        user = id_map.get(uid)
+        if not user: continue
+        
+        plans = stats['plans']
+        reports = stats['reports']
+        trans = stats['transactions']
+        
+        # Calculate Ratios (Safety check for division by zero)
+        
+        # 1. Plan to Visit Ratio (Completion Rate): Reports / Plans
+        if plans > 0:
+            ratio_pv = reports / plans
+        else:
+            ratio_pv = 0.0
+            
+        # 2. Visit to Transaction Ratio (Conversion Rate): Transactions / Reports
+        if reports > 0:
+            ratio_vt = trans / reports
+        else:
+            # If transactions exist but 0 visits (phone orders?), ratio is just the raw count or handle as exception
+            ratio_vt = float(trans) if trans > 0 else 0.0
+        
+        output_rows.append({
+            "code": user['code'],
+            "name": user['name'],
+            "plans": plans,
+            "reports": reports,
+            "transactions": trans,
+            "ratio_pv": ratio_pv,
+            "ratio_vt": ratio_vt
+        })
+
+    # Sort by Total Transactions Descending
+    output_rows.sort(key=lambda x: x['transactions'], reverse=True)
+
+    # Markdown Construction
+    md = "SALESMAN PERFORMANCE SCORECARD (360 View):\n"
+    md += "| Sales User ID | Salesman Name | Total Plans | Total Visits | Total Transactions | Plan to Visit Ratio | Visit to Transaction Ratio |\n"
+    md += "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        pv_str = f"{row['ratio_pv']:.2f}"
+        vt_str = f"{row['ratio_vt']:.2f}"
+        
+        md += f"| {row['code']} | {row['name']} | {row['plans']} | {row['reports']} | {row['transactions']} | {pv_str} | {vt_str} |\n"
+        
+    return md
+
 # === MCP PROMPTS (Agent Instructions) ===
 @mcp.prompt()
 def generate_planned_visits_report_by_customer() -> str:
@@ -859,6 +1034,25 @@ def generate_planned_visits_report_by_salesman() -> str:
     Please run the tool `fetch_visit_plans_by_salesman`.
     
     Output the table exactly as returned by the tool.
+    """
+
+@mcp.prompt()
+def generate_planned_visits_report_by_clinic() -> str:
+    """
+    Generates a prompt to request the planned visits report grouped by clinic.
+    """
+    return """
+    I need a Planned Visits Report grouped by Clinic.
+    
+    Please run the tool `fetch_visit_plans_by_clinic`.
+    
+    This tool automatically:
+    1. Distinguishes branches by City Code (replacing 'Pilih Kota/Kab' with '-').
+    2. Merges duplicate entries within the same city.
+    3. Aggregates the visit counts.
+    
+    The output will be a table with columns: 
+    | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
     """
 
 @mcp.prompt()
@@ -913,22 +1107,38 @@ def generate_transaction_report_by_product() -> str:
     """
 
 @mcp.prompt()
-def generate_planned_visits_report_by_clinic() -> str:
+def generate_report_counts_by_salesman() -> str:
     """
-    Generates a prompt to request the planned visits report grouped by clinic.
+    Generates a prompt to request the count of completed visit reports grouped by salesman.
     """
     return """
-    I need a Planned Visits Report grouped by Clinic.
+    I need a Report on Completed Visits (Reports) grouped by Salesman.
     
-    Please run the tool `fetch_visit_plans_by_clinic`.
+    Please run the tool `fetch_report_counts_by_salesman`.
     
     This tool automatically:
-    1. Distinguishes branches by City Code (replacing 'Pilih Kota/Kab' with '-').
-    2. Merges duplicate entries within the same city.
-    3. Aggregates the visit counts.
+    1. Links Reports -> Plans -> Users.
+    2. Aggregates the count of reports per salesman.
     
-    The output will be a table with columns: 
-    | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
+    Output the table exactly as returned by the tool.
+    """
+
+@mcp.prompt()
+def generate_comprehensive_salesman_report() -> str:
+    """
+    Generates a prompt for the all-in-one Salesman Performance Scorecard.
+    """
+    return """
+    I need the Comprehensive Salesman Performance Report (Scorecard).
+    
+    Please run the tool `fetch_comprehensive_salesman_performance`.
+    
+    This tool combines data from Plans, Reports, and Transactions into one table with:
+    1. Identity Resolution (mapping messy transaction names to official users).
+    2. Aggregated counts for Plans, Visits, and Sales.
+    3. Performance Ratios (Plan Completion & Conversion Rate).
+    
+    Display the result exactly as returned.
     """
 
 # Run the MCP server
