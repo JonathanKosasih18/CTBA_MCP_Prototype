@@ -202,3 +202,24 @@ CREATE TABLE `transactions` (
 
 -- --------------------------------------------------------
 
+-- Table structure for table `acc_customers`
+CREATE TABLE `acc_customers` (
+    `id` bigint(20) UNSIGNED NOT NULL PRIMARY KEY,
+    `cid` varchar(255) NOT NULL,
+    `cust_name` varchar(255) NOT NULL,
+    `address1` varchar(255) DEFAULT NULL,
+    `address2` varchar(255) DEFAULT NULL,
+    `locality` varchar(255) DEFAULT NULL,
+    `province` varchar(255) DEFAULT NULL,
+    `city` varchar(255) DEFAULT NULL,
+    `postal_code` varchar(255) DEFAULT NULL,
+    `clasification` varchar(255) DEFAULT NULL,
+    `dccode` varchar(255) DEFAULT NULL,
+    `amcode` varchar(255) DEFAULT NULL,
+    `tscode` varchar(255) DEFAULT NULL,
+    `pscode` varchar(255) DEFAULT NULL,
+    `smcode` varchar(255) DEFAULT NULL,
+    `deleted_at` timestamp NULL DEFAULT NULL,
+    `created_at` timestamp NULL DEFAULT NULL,
+    `updated_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

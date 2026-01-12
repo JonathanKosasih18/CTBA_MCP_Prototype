@@ -86,181 +86,208 @@ def get_fuzzy_match(name, existing_names, threshold=0.9):
     matches = difflib.get_close_matches(name, existing_names, n=1, cutoff=threshold)
     return matches[0] if matches else None
 
-# === MCP RESOURCES (Static Reference Data) ===
-
-# PRODUCTS RESOURCE
-@mcp.resource("sales://official_products")
-def get_official_product_list() -> str:
+def load_official_users_map():
     """
-    Retrieves the authoritative list of valid product names from the database.
+    Creates reference maps from the 'users' table.
+    """
+    id_map = {}     # ID -> User Object
+    code_map = {}   # 'ps100' -> ID
+    digit_map = {}  # '214' -> ID (Only if unique!)
+    name_list = []  # List for fuzzy matching
     
-    Acts as the 'Source of Truth' for product normalization tasks.
+    digit_counts = defaultdict(int)
+    temp_digit_to_id = {}
 
-    Returns:
-        str: A formatted, newline-separated string listing all official product names.
-            
-            Format:
-            OFFICIAL PRODUCT REGISTRY:
-            - Product A
-            - Product B
-    """
-    query = text("SELECT prodname FROM products")
-    with engine.connect() as conn:
-        result = conn.execute(query)
-        return "OFFICIAL PRODUCT REGISTRY:\n" + "\n".join([f"- {row.prodname}" for row in result])
-
-# USERS RESOURCE
-@mcp.resource("users://official_directory")
-def get_official_user_list() -> str:
-    """
-    Retrieves the official registry of salesmen, including internal ID, Username (unique ID), and Full Name.
-    
-    Used to resolve identity for messy names or ID-based foreign keys (like 'plans.userid').
-
-    Returns:
-        str: A formatted string linking Internal IDs and Usernames to Names.
-            
-            Format:
-            OFFICIAL USER DIRECTORY:
-            - [ID: 1] [PS101] John Doe
-            - [ID: 2] [PS102] Jane Smith
-    """
     query = text("SELECT id, username, name FROM users")
     with engine.connect() as conn:
         result = conn.execute(query)
-        return "OFFICIAL USER DIRECTORY:\n" + "\n".join([f"- [ID: {row.id}] [{row.username}] {row.name}" for row in result])
-
-# CLINICS RESOURCE
-@mcp.resource("clinics://official_registry")
-def get_official_clinic_list() -> str:
-    """
-    Retrieves the official registry of clinics with detailed location data.
-    
-    Includes Address, City, and Province to help the AI distinguish between different branches of the same clinic vs. duplicate entries of the same location.
-
-    Returns:
-        str: A formatted string linking IDs to Name and Location.
+        for row in result:
+            u_id = str(row.id)
+            code = str(row.username).lower().strip() 
+            name = row.name
             
-            Format:
-            OFFICIAL CLINIC REGISTRY:
-            - [ID: 1] Name: Klinik Alpha | Loc: Jl. Merdeka, City: JKT, Prov: DKI
-            - [ID: 2] Name: Klinik Alpha | Loc: Jl. Sudirman, City: BDG, Prov: JBR
+            # Standard Maps
+            id_map[u_id] = {"id": u_id, "code": row.username, "name": name}
+            code_map[code] = u_id
+            
+            # Clean name for fuzzy list: "drg. Jonathan" -> "jonathan"
+            clean_n = normalize_name(name) 
+            name_list.append({"id": u_id, "name": clean_n})
+            
+            # Digit Map Logic
+            digits = re.search(r'\d+', code)
+            if digits:
+                d_str = digits.group()
+                digit_counts[d_str] += 1
+                temp_digit_to_id[d_str] = u_id
+
+    for d_str, count in digit_counts.items():
+        if count == 1:
+            digit_map[d_str] = temp_digit_to_id[d_str]
+            
+    return id_map, code_map, digit_map, name_list
+
+def extract_salesman_code(text: str) -> str:
     """
-    # Added address, citycode, provcode
-    query = text("SELECT id, clinicname, address, citycode, provcode FROM clinics")
+    Attempts to find a code pattern (PS, DC, AM, etc.) in a messy string.
+    Supported prefixes: PS, DC, AM, TS, CR, AC, SM, HR
+    Example: 'AM 210 Wilson' -> 'am210'
+    """
+    if not text: return None
     
+    # Updated Regex to include all new prefixes
+    # \b ensures we match start of word
+    # (ps|dc|...) captures the prefix
+    # [\s\-\.]* allows flexible spacing (PS-100, PS 100, PS.100)
+    # (\d+) captures the number
+    pattern = r'\b(ps|dc|am|ts|cr|ac|sm|hr)[\s\-\.]*(\d+)\b'
+    
+    match = re.search(pattern, text.lower())
+    if match:
+        return f"{match.group(1)}{match.group(2)}" # returns ps100, am210, etc.
+    return None
+
+def clean_salesman_name(text: str) -> str:
+    """
+    Aggressively strips ALL distractions to find the 'Core Name'.
+    Removes:
+    1. Codes/Prefixes (PS, DC, AM...) even without numbers.
+    2. Numbers (100, 214).
+    3. Punctuation.
+    
+    Input: "Ps Gladys"       -> "gladys"
+    Input: "214 Bryan"       -> "bryan"
+    Input: "Mr. Ps. Gladys"  -> "gladys"
+    """
+    if not text: return ""
+    text = text.lower()
+    
+    # 1. Strip known prefixes (word boundary \b ensures we don't kill 'AM' in 'AMANDA')
+    # We look for these codes followed by space, dot, or end of string
+    prefixes = r'\b(ps|dc|am|ts|cr|ac|sm|hr|mr|ms|mrs|dr)\b'
+    text = re.sub(prefixes, ' ', text)
+    
+    # 2. Strip digits
+    text = re.sub(r'\d+', ' ', text)
+    
+    # 3. Strip punctuation/symbols
+    text = re.sub(r'[\W_]', ' ', text)
+    
+    # 4. Collapse whitespace
+    return " ".join(text.split())
+
+def resolve_salesman_identity(raw_text, code_map, digit_map, name_list):
+    """
+    Priority: Code -> Unique Digit -> Fuzzy Name
+    """
+    clean_text = raw_text.lower().strip()
+    
+    # 1. Strict Code Match (e.g. 'PS100')
+    extracted_code = extract_salesman_code(clean_text)
+    if extracted_code and extracted_code in code_map:
+        return code_map[extracted_code]
+
+    # 2. Loose Digit Match (e.g. '214')
+    loose_digits = re.findall(r'\b\d+\b', clean_text)
+    for d in loose_digits:
+        if d in digit_map:
+            return digit_map[d]
+
+    # 3. Fuzzy Name Match
+    # Use the AGGRESSIVE cleaner now
+    core_name = clean_salesman_name(clean_text)
+    
+    if not core_name: return None
+
+    official_names = [x['name'] for x in name_list]
+    # Lower threshold slightly to catch short names like 'Yolan'
+    match_name = get_fuzzy_match(core_name, official_names, threshold=0.80) 
+    
+    if match_name:
+        for u in name_list:
+            if u['name'] == match_name:
+                return u['id']
+                
+    return None
+
+def load_customer_directory():
+    """
+    Loads the 'Official' clean customer list from the 'customers' table.
+    Now includes 'id' for the final report.
+    Returns: [{'id': '101', 'name': 'Official Name', 'clean': 'normalized name'}]
+    """
+    targets = []
+    # Added 'id' to the query
+    query = text("SELECT id, custname FROM customers")
     with engine.connect() as conn:
         result = conn.execute(query)
-        # Format the location data into a "signature" for the AI to analyze
-        return "OFFICIAL CLINIC REGISTRY:\n" + "\n".join([
-            f"- [ID: {row.id}] Name: {row.clinicname} | Loc: {row.address}, City: {row.citycode}, Prov: {row.provcode}" 
-            for row in result
-        ])
+        for row in result:
+            if row.custname:
+                targets.append({
+                    "id": str(row.id),
+                    "name": row.custname,
+                    "clean": normalize_name(row.custname)
+                })
+    return targets
 
-# CUSTOMERS RESOURCE
-'''
-@mcp.resource("customers://official_registry")
-def get_official_customer_list() -> str:
+def load_acc_cid_map():
     """
-    Retrieves the official registry of customers with phone contact data.
-    
-    Includes Phone Numbers to help the AI distinguish between different people with the same name, or merge duplicate entries for the same person.
-
-    Returns:
-        str: A formatted string linking IDs to Name and Phone.
-            
-            Format:
-            OFFICIAL CUSTOMER REGISTRY:
-            - [ID: 501] Name: John Doe | Phone: 08123456789
-            - [ID: 502] Name: John Doe | Phone: 08999999999 (Different Person)
+    Loads mapping from Accounting IDs (cid) to Accounting Names.
+    Returns: { 'CID123': 'Drg. Budi Santoso' }
     """
-    # specific columns requested: id, custname, phone
-    query = text("SELECT id, custname, phone FROM customers")
-    
+    mapping = {}
+    query = text("SELECT cid, cust_name FROM acc_customers")
     with engine.connect() as conn:
         result = conn.execute(query)
-        # Format the identity signature for the AI
-        return "OFFICIAL CUSTOMER REGISTRY:\n" + "\n".join([
-            f"- [ID: {row.id}] Name: {row.custname} | Phone: {row.phone}" 
-            for row in result
-        ])
-'''
+        for row in result:
+            if row.cid:
+                mapping[str(row.cid).strip()] = row.cust_name
+    return mapping
+
+def normalize_product_name(text: str) -> str:
+    """
+    Normalizes product names for matching.
+    CRITICAL: Keeps digits (022, 018) as they are often specs.
+    Removes punctuation and extra whitespace.
+    """
+    if not text: return ""
+    text = text.lower()
+    
+    # Replace punctuation (dots, dashes, brackets) with space
+    # Keep A-Z, 0-9, and whitespace (\w includes digits)
+    text = re.sub(r'[^\w\s]', ' ', text)
+    
+    # Collapse multiple spaces
+    return " ".join(text.split())
+
+def load_product_directory():
+    """
+    Loads the official product list from the 'products' table.
+    Returns: 
+    - id_map: { '101': 'Bracket System' } (ID -> Name)
+    - name_list: List of clean names for fuzzy matching
+    """
+    id_map = {}
+    name_list = []
+    
+    query = text("SELECT id, prodname FROM products")
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        for row in result:
+            p_id = str(row.id)
+            p_name = row.prodname
+            
+            id_map[p_id] = p_name
+            # Store normalized version for fuzzy matching
+            name_list.append({
+                "id": p_id,
+                "name": p_name,
+                "clean": normalize_product_name(p_name)
+            })
+            
+    return id_map, name_list
 
 # === MCP TOOLS (Dynamic Data Fetching) ===
-
-@mcp.tool()
-def fetch_raw_transaction_data_by_salesman_name() -> str:
-    """
-    Retrieves a snapshot of unstandardized transaction counts grouped by the raw salesman name.
-
-    Returns:
-        str: A formatted log of raw names and their transaction counts.
-            
-            Format:
-            RAW SALES LOG:
-            - messy_name_1: 5
-            - MESSY NAME 2: 12
-    """
-    query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
-    with engine.connect() as conn:
-        result = conn.execute(query)
-        return "RAW SALES LOG:\n" + "\n".join([f"- {row.salesman_name}: {row.c}" for row in result])
-
-@mcp.tool()
-def fetch_raw_transaction_data_by_product_name() -> str:
-    """
-    Retrieves a snapshot of unstandardized transaction counts grouped by the raw product name.
-
-    Returns:
-        str: A formatted log of raw product names and their transaction counts.
-            
-            Format:
-            RAW PRODUCT LOG:
-            - raw_product_name_a: 8
-            - raw_product_name_b: 3
-    """
-    query = text("SELECT product, COUNT(*) as c FROM transactions GROUP BY product")
-    with engine.connect() as conn:
-        result = conn.execute(query)
-        return "RAW PRODUCT LOG:\n" + "\n".join([f"- {row.product}: {row.c}" for row in result])
-
-@mcp.tool()
-def fetch_raw_visit_plans() -> str:
-    """
-    Retrieves a count of planned visits grouped by the User ID.
-
-    Returns:
-        str: A formatted log of User IDs and their plan counts.
-            
-            Format:
-            RAW PLAN LOG:
-            - UserID 1: 5 visits
-            - UserID 24: 12 visits
-    """
-    query = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
-    
-    with engine.connect() as conn:
-        result = conn.execute(query)
-        return "RAW PLAN LOG:\n" + "\n".join([f"- UserID {row.userid}: {row.c} visits" for row in result])
-
-@mcp.tool()
-def fetch_raw_visit_plans_by_clinic() -> str:
-    """
-    Retrieves a snapshot of planned visits grouped by the Clinic ID (foreign key).
-
-    Returns:
-        str: A formatted log of Clinic IDs and their plan counts.
-            
-            Format:
-            RAW CLINIC VISIT LOG:
-            - ClinicID 101: 5 visits
-    """
-    query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
-    
-    with engine.connect() as conn:
-        result = conn.execute(query)
-        return "RAW CLINIC VISIT LOG:\n" + "\n".join([f"- ClinicID {row.cliniccode}: {row.c} visits" for row in result])
-
 @mcp.tool()
 def fetch_deduplicated_visit_report() -> str:
     """
@@ -354,190 +381,320 @@ def fetch_deduplicated_visit_report() -> str:
         
     return output
 
+@mcp.tool()
+def fetch_deduplicated_sales_report() -> str:
+    """
+    Retrieves a consolidated Sales Performance Report.
+    
+    Columns: | Sales User ID | Sales Name | Transaction Count |
+    """
+    # 1. Load Source of Truth
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+    
+    official_counts = defaultdict(int)
+    unmatched_counts = defaultdict(int)
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        
+        for row in result:
+            raw_field = str(row.salesman_name)
+            count = row.c
+            
+            # Split logic
+            parts = re.split(r'[/\&,]', raw_field)
+            
+            for part in parts:
+                part = part.strip()
+                if not part: continue
+                
+                # Attempt Resolution
+                resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
+                
+                if resolved_id:
+                    official_counts[resolved_id] += count
+                else:
+                    # Unmatched Grouping Logic
+                    core_unmatched = clean_salesman_name(part)
+                    if not core_unmatched:
+                        core_unmatched = part.strip()
+                    final_key = core_unmatched.title()
+                    unmatched_counts[final_key] += count
+
+    # Format Output
+    output_rows = []
+    
+    # Official Matches
+    for user_id, total in official_counts.items():
+        user = id_map.get(user_id)
+        if user:
+            output_rows.append({
+                "user_id": user['code'], # users.username
+                "name": user['name'],    # users.name
+                "count": total
+            })
+            
+    # Unmatched Entries
+    for name, total in unmatched_counts.items():
+        output_rows.append({
+            "user_id": "[NO CODE]", 
+            "name": name, 
+            "count": total
+        })
+    
+    output_rows.sort(key=lambda x: x['count'], reverse=True)
+    
+    md = "CONSOLIDATED SALES REPORT (Auto-Deduplicated):\n"
+    md += "| Sales User ID | Sales Name | Transaction Count |\n"
+    md += "| :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
+        
+    return md
+
+@mcp.tool()
+def fetch_transaction_report_by_customer_name() -> str:
+    """
+    Retrieves transaction counts grouped by CLEAN Customer Name with IDs.
+    
+    Now includes 'ID Normalization' to strip prefixes like 'B-' from 'B-CID00196'.
+    """
+    # 1. Load Reference Data
+    official_customers = load_customer_directory()
+    cid_to_name_map = load_acc_cid_map()
+    
+    # 2. Fetch Raw Transaction Counts
+    query = text("""
+        SELECT cust_id, COUNT(*) as c 
+        FROM transactions 
+        WHERE cust_id IS NOT NULL AND cust_id != ''
+        GROUP BY cust_id
+    """)
+    
+    grouped_data = defaultdict(lambda: {"count": 0, "id": "N/A"})
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        
+        for row in result:
+            raw_cid = str(row.cust_id).strip()
+            count = row.c
+            
+            # --- STEP 0: ID NORMALIZATION (NEW) ---
+            # Remove prefixes like 'B-' or 'A-' (Single uppercase letter followed by dash)
+            # This turns 'B-CID00196' -> 'CID00196'
+            clean_cid = re.sub(r'^[A-Z]-', '', raw_cid)
+            
+            # Use the CLEAN ID for all lookups
+            t_cid = clean_cid
+            
+            # --- HOP 1: ID to Acc Name ---
+            acc_name = cid_to_name_map.get(t_cid)
+            
+            if not acc_name:
+                # If still unknown after cleaning, display the clean ID
+                key = f"[Unknown ID] {t_cid}"
+                grouped_data[key]["count"] += count
+                grouped_data[key]["id"] = t_cid 
+                continue
+                
+            # --- HOP 2: Acc Name to Clean Name ---
+            clean_acc_name = normalize_name(acc_name)
+            target_clean_names = [x['clean'] for x in official_customers]
+            
+            # Fuzzy Match
+            match_clean = get_fuzzy_match(clean_acc_name, target_clean_names, threshold=0.85)
+            
+            if match_clean:
+                # MATCH FOUND: Get Official Name AND Official ID
+                official_entry = next((x for x in official_customers if x['clean'] == match_clean), None)
+                if official_entry:
+                    grouped_data[official_entry['name']]["count"] += count
+                    grouped_data[official_entry['name']]["id"] = official_entry['id']
+            else:
+                # NO MATCH: Use formatted Acc Name
+                # For the ID column, we prefer the 'CID' from transactions if available
+                display_name = f"[New] {clean_acc_name.title()}" if clean_acc_name else acc_name
+                
+                grouped_data[display_name]["count"] += count
+                grouped_data[display_name]["id"] = t_cid 
+
+    # 3. Format Output
+    output_rows = []
+    for name, data in grouped_data.items():
+        output_rows.append({
+            "id": data["id"],
+            "name": name,
+            "count": data["count"]
+        })
+        
+    output_rows.sort(key=lambda x: x['count'], reverse=True)
+    
+    md = "CUSTOMER TRANSACTION REPORT (Linked & Deduplicated):\n"
+    md += "| Customer ID | Customer Name | Transaction Count |\n"
+    md += "| :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        md += f"| {row['id']} | {row['name']} | {row['count']} |\n"
+        
+    return md
+
+@mcp.tool()
+def fetch_visit_plans_by_salesman() -> str:
+    """
+    Retrieves the count of planned visits grouped by Salesman.
+    
+    Columns: | Sales User ID | Sales Name | Visit Count |
+    """
+    # 1. Load Source of Truth (Reuse existing map)
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    # 2. Fetch Raw Plan Counts (Grouped by User ID)
+    query = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
+    
+    output_rows = []
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        for row in result:
+            u_id = str(row.userid)
+            count = row.c
+            
+            # 3. Lookup User Details
+            user = id_map.get(u_id)
+            
+            if user:
+                # MATCH FOUND
+                output_rows.append({
+                    "user_id": user['code'], # users.username (e.g. PS101)
+                    "name": user['name'],    # users.name
+                    "count": count
+                })
+            else:
+                # NO MATCH (Integrity Error in DB?)
+                output_rows.append({
+                    "user_id": f"ID {u_id}",
+                    "name": "[Unknown User]",
+                    "count": count
+                })
+                
+    # 4. Sort and Format
+    output_rows.sort(key=lambda x: x['count'], reverse=True)
+    
+    md = "PLANNED VISITS REPORT (Grouped by Salesman):\n"
+    md += "| Sales User ID | Sales Name | Visit Count |\n"
+    md += "| :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
+        
+    return md
+
+# ... (Keep existing imports and helpers)
+
+@mcp.tool()
+def fetch_transaction_report_by_product() -> str:
+    """
+    Retrieves sales performance grouped by Product.
+    
+    CORRECTED METRICS:
+    - Units Sold: Sum of 'qty' column (not count of rows).
+    - Total Revenue: Sum of 'amount' column.
+    
+    LOGIC:
+    1. Exact ID Match.
+    2. Containment Match (e.g., 'Angel Aligner' inside 'Angel Aligner Select').
+    3. Fuzzy Match.
+    """
+    # 1. Load Reference Data
+    id_to_name, official_products = load_product_directory()
+    
+    # Sort by length for containment logic (Longest first)
+    official_products.sort(key=lambda x: len(x['clean']), reverse=True)
+    target_clean_names = [x['clean'] for x in official_products]
+    
+    # 2. Fetch Raw Data (Now summing QTY and AMOUNT)
+    query = text("""
+        SELECT item_id, product, SUM(qty) as units, SUM(amount) as revenue 
+        FROM transactions 
+        GROUP BY item_id, product
+    """)
+    
+    grouped_data = defaultdict(lambda: {"count": 0, "revenue": 0})
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        
+        for row in result:
+            raw_id = str(row.item_id).strip() if row.item_id else ""
+            raw_name = str(row.product)
+            
+            # CRITICAL FIX: Use SUM(qty) instead of row count
+            units = int(row.units) if row.units else 0
+            revenue = int(row.revenue) if row.revenue else 0
+            
+            clean_raw = normalize_product_name(raw_name)
+            match_found = False
+            
+            # --- STRATEGY 1: Exact ID Match ---
+            if raw_id and raw_id in id_to_name:
+                official_name = id_to_name[raw_id]
+                grouped_data[official_name]["count"] += units
+                grouped_data[official_name]["revenue"] += revenue
+                match_found = True
+                
+            # --- STRATEGY 2: Containment Match ---
+            if not match_found and clean_raw:
+                for official in official_products:
+                    # Check if Official Name is inside Raw Name (e.g. "Angel Aligner" in "Angel Aligner Select")
+                    if f" {official['clean']} " in f" {clean_raw} ":
+                        grouped_data[official['name']]["count"] += units
+                        grouped_data[official['name']]["revenue"] += revenue
+                        match_found = True
+                        break 
+            
+            # --- STRATEGY 3: Fuzzy Match ---
+            if not match_found and clean_raw:
+                match_clean = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.70)
+                if match_clean:
+                    official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
+                    if official_entry:
+                        grouped_data[official_entry['name']]["count"] += units
+                        grouped_data[official_entry['name']]["revenue"] += revenue
+                        match_found = True
+            
+            # --- FALLBACK ---
+            if not match_found:
+                clean_display = clean_raw.title() if clean_raw else "[Unknown Product]"
+                display_name = f"[Uncategorized] {clean_display}"
+                grouped_data[display_name]["count"] += units
+                grouped_data[display_name]["revenue"] += revenue
+
+    # 3. Format Output
+    output_rows = []
+    for name, data in grouped_data.items():
+        output_rows.append({
+            "name": name,
+            "count": data["count"],
+            "revenue": data["revenue"]
+        })
+        
+    output_rows.sort(key=lambda x: x['revenue'], reverse=True)
+    
+    md = "PRODUCT SALES REPORT (Consolidated):\n"
+    md += "| Product Name | Units Sold (Qty) | Total Revenue |\n"
+    md += "| :--- | :--- | :--- |\n"
+    
+    for row in output_rows:
+        rev_formatted = f"{row['revenue']:,}"
+        md += f"| {row['name']} | {row['count']} | {rev_formatted} |\n"
+        
+    return md
+
 # === MCP PROMPTS (Agent Instructions) ===
-
-@mcp.prompt()
-def generate_cleaned_sales_report_by_salesman_name() -> str:
-    """
-    Generates a prompt designed to reconcile messy salesman names against the official directory.
-    
-    Injects:
-    1. `users://official_directory` (Resource) as the dictionary.
-    2. `fetch_raw_transaction_data_by_salesman_name` (Tool) as the dirty data.
-
-    Returns:
-        str: A fully constructed prompt instructing the LLM to map raw names to official IDs and output a clean Markdown report.
-    """
-    raw_data = fetch_raw_transaction_data_by_salesman_name()
-    official_users = get_official_user_list() 
-
-    return f"""
-    I need a standardized Sales Performance Report.
-    
-    REFERENCE DATA (Source of Truth):
-    {official_users}
-
-    RAW DATA TO ANALYZE:
-    {raw_data}
-
-    YOUR LOGIC REQUIREMENTS:
-    1. **Normalize Names**: Map every raw name to the correct 'Official User' from the directory. Example: 'PS100 Gladys' -> 'Gladys' (or keep the ID if preferred).
-    2. **Handle Multi-Salesman Entries**: For 'GLADY / WILSON', credit both 'Gladys' and 'Wilson' by adding the transaction count to each. Do not split the count, instead duplicate it. An entry with N salesmen counts as N separate full credits.
-    3. **Consistency**: Use the spelling from the Official Directory.
-    
-    OUTPUT FORMAT:
-    Markdown table: [Official Name, Total Transactions]
-    """
-
-@mcp.prompt()
-def validate_salesmen_identity() -> str:
-    """
-    Generates a QA prompt to audit the mapping between raw transaction names and official users.
-    
-    Useful for detecting new, unknown, or typo-heavy names that the automatic report might miss.
-
-    Returns:
-        str: A prompt instructing the LLM to create a 'Validation Table' showing the status (Matched/Unmatched) of every raw name found in the logs.
-    """
-    raw_data = fetch_raw_transaction_data_by_salesman_name()
-    official_users = get_official_user_list()
-
-    return f"""
-    Act as a Data Quality Analyst. Map 'Transaction Names' to 'Official Users'.
-    
-    OFFICIAL DIRECTORY:
-    {official_users}
-
-    RAW TRANSACTION NAMES:
-    {raw_data}
-
-    YOUR TASK:
-    1. **Identify Matches**: Link every raw name to a `[Code] Name` from the directory.
-        - Use the Code (e.g. PS100) if present in the raw string.
-        - Use Fuzzy Matching on the name if no code is present.
-    2. **Flag Anomalies**: List names that have NO match in the directory.
-
-    OUTPUT:
-    Validation Report table:
-    | Raw Name | Status | Matched Official ID | Matched Official Name |
-    """
-
-@mcp.prompt()
-def generate_cleaned_product_report() -> str:
-    """
-    Generates a prompt designed to reconcile raw 'product_names' against the official product registry.
-
-    Injects:
-    1. `sales://official_products` (Resource) as the dictionary.
-    2. `fetch_raw_transaction_data_by_product_name` (Tool) as the dirty data.
-
-    Returns:
-        str: A fully constructed prompt instructing the LLM to map raw products to official product names and aggregate the counts.
-    """
-    raw_data = fetch_raw_transaction_data_by_product_name()
-    official_products = get_official_product_list()
-
-    return f"""
-    I need a standardized Product Sales Report.
-    
-    ### REFERENCE DATA (The Source of Truth)
-    Use this list to validate the raw names. If a raw name looks like one of these, map it here.
-    {official_products}
-
-    ### RAW DATA TO ANALYZE
-    {raw_data}
-
-    ### YOUR LOGIC REQUIREMENTS:
-    1. **Normalize Product Names**: Map every 'raw_product_name' from the raw data to the closest match in the 'Official Product Registry'.
-    2. **Consolidate Counts**: If multiple raw names map to the same official product, sum their transaction counts.
-    3. **Handle Unknowns**: If a raw name does not resemble ANY official product, label it as "Uncategorized".
-    
-    ### OUTPUT FORMAT:
-    Provide a Markdown table with columns: 
-    | Official Product Name | Total Transactions |
-    """
-
-@mcp.prompt()
-def generate_planned_visits_report_by_sales() -> str:
-    """
-    Generates a report showing planned visits per salesperson.
-    
-    Logic:
-    1. Fetches raw plan counts (which use 'userid' integers).
-    2. Fetches the Official User List (which maps 'id' to 'Name').
-    3. Maps the IDs and aggregates the table.
-
-    Returns:
-        str: A prompt constructing the 'Planned Visits' markdown table.
-    """
-    raw_plans = fetch_raw_visit_plans()
-    official_users = get_official_user_list()
-
-    return f"""
-    I need a Planned Visits Report grouped by Salesperson.
-    
-    REFERENCE DATA (User Directory):
-    {official_users}
-
-    RAW DATA (Plan Counts by User ID):
-    {raw_plans}
-
-    YOUR LOGIC REQUIREMENTS:
-    1. **Map IDs to Names**: The Raw Data uses 'UserID' (integers). Look up each UserID in the 'REFERENCE DATA' to find the matching Name. Example: If Raw Data has 'UserID 5' and Reference has '- [ID: 5] [PS100] Gladys', map it to 'Gladys'.
-    2. **Handle Unmatched IDs**: If a UserID exists in plans but not in the directory, label the name as "Unknown User (ID: X)".
-    
-    OUTPUT FORMAT:
-    Provide a Markdown table with columns: 
-    | Salesperson Name | Total Planned Visits |
-    """
-
-@mcp.prompt()
-def generate_planned_visits_report_by_clinic() -> str:
-    """
-    Generates a smart report of planned visits that merges duplicate clinic entries 
-    while distinguishing different branches.
-
-    Injects:
-    1. `clinics://official_registry` (Resource) containing Name + Location Data.
-    2. `fetch_raw_visit_plans_by_clinic` (Tool) containing raw counts by ID.
-
-    Returns:
-        str: A prompt instructing the AI to perform entity resolution and aggregation.
-    """
-    raw_plans = fetch_raw_visit_plans_by_clinic()
-    official_clinics = get_official_clinic_list()
-
-    return f"""
-    I need a Planned Visits Report grouped by Clinic.
-    
-    ### REFERENCE DATA (Clinic Registry with Location)
-    {official_clinics}
-
-    ### RAW DATA (Plan Counts by Clinic ID)
-    {raw_plans}
-
-    ### YOUR LOGIC REQUIREMENTS (Entity Resolution):
-    You must decide which IDs represent the same real-world clinic and which are different.
-    
-    **Step 1: Analyze the Reference Data**
-    - **CASE 1 & 2 (Merge Target):** If multiple IDs have the SAME (or fuzzy matched) Name AND similar Location (Address/City/Prov), treat them as ONE clinic.
-      - *Example:* 'Klinik Permana' (ID 1) and 'Klinik Permana Sari' (ID 2) at the same address should be merged.
-    - **CASE 3 (Split Target):** If multiple IDs have the SAME Name but COMPLETELY DIFFERENT Locations (City/Prov), treat them as DIFFERENT clinics.
-      - *Example:* 'Clinic Kimia' in Jakarta vs 'Clinic Kimia' in Bali are different. Keep them separate.
-
-    **Step 2: Aggregate Counts**
-    - Look at the `RAW DATA`. Map every `ClinicID` to your resolved entities from Step 1.
-    - If you merged IDs (e.g., ID 1 and ID 2), sum their visit counts together.
-
-    ### OUTPUT FORMAT:
-    Provide a Markdown table with these specific columns: 
-    | Clinic ID(s) | Clinic Name | Number of Visits |
-    | :--- | :--- | :--- |
-    | 1, 5, 9 | Klinik Permana Sari (Merged) | 15 |
-    | 2 | Clinic Kimia (Jakarta Branch) | 4 |
-    | 3 | Clinic Kimia (Bali Branch) | 8 |
-    """
-
 @mcp.prompt()
 def generate_planned_visits_report_by_customer() -> str:
     """
@@ -555,6 +712,70 @@ def generate_planned_visits_report_by_customer() -> str:
     3. Aggregate the visit counts for these merged identities automatically.
     
     Output the result exactly as the tool returns it (Markdown Table).
+    """
+
+@mcp.prompt()
+def generate_planned_visits_report_by_salesman() -> str:
+    """
+    Generates a prompt to request the planned visits report grouped by salesman.
+    """
+    return """
+    I need a Planned Visits Report grouped by Salesman.
+    
+    Please run the tool `fetch_visit_plans_by_salesman`.
+    
+    Output the table exactly as returned by the tool.
+    """
+
+@mcp.prompt()
+def generate_transaction_report_by_salesmen() -> str:
+    """
+    Generates a prompt to request the consolidated sales report.
+    Uses `fetch_deduplicated_sales_report` to do the heavy lifting.
+    """
+    return """
+    I need the Sales Performance Report.
+    
+    Please run the tool `fetch_deduplicated_sales_report`.
+    
+    This tool will automatically:
+    1. Split multi-salesman entries (giving full credit to each).
+    2. Normalize names based on the User Database.
+    3. Aggregate the data.
+    
+    Display the returned table exactly as is.
+    """
+
+@mcp.prompt()
+def generate_transaction_report_by_customer() -> str:
+    """
+    Generates a prompt to request the customer transaction report.
+    """
+    return """
+    I need the Transaction Report grouped by Customer Name.
+    
+    Please run the tool `fetch_transaction_report_by_customer_name`.
+    
+    This tool automatically:
+    1. Links Transaction IDs to Accounting Names.
+    2. Fuzzy matches Accounting Names to the Official Customer Database.
+    3. Aggregates the data.
+    """
+
+@mcp.prompt()
+def generate_transaction_report_by_product() -> str:
+    """
+    Generates a prompt to request the product sales report.
+    """
+    return """
+    I need the Transaction Report grouped by Product.
+    
+    Please run the tool `fetch_transaction_report_by_product`.
+    
+    This tool automatically:
+    1. Normalizes messy product names based on the Product List.
+    2. Links Transaction IDs to the Official Product List.
+    3. Aggregates Units Sold and Revenue.
     """
 
 # Run the MCP server
