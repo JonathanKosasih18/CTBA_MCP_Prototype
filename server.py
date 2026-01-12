@@ -287,6 +287,68 @@ def load_product_directory():
             
     return id_map, name_list
 
+def normalize_clinic_name(text: str) -> str:
+    """
+    Normalizes clinic names by stripping facility types and punctuation.
+    Input: "RS. Mitra Keluarga" -> "mitra keluarga"
+    Input: "Klinik Gigi Sehat" -> "gigi sehat"
+    """
+    if not text: return ""
+    text = text.lower()
+    
+    # 1. Strip standard facility prefixes (must be whole words)
+    # rs = Rumah Sakit, rsia = RS Ibu & Anak, rsu = RS Umum, dr/drg = Doctor
+    prefixes = r'\b(klinik|apotek|praktek|rs|rsia|rsu|dr|drg)\b'
+    text = re.sub(prefixes, ' ', text)
+    
+    # 2. Strip punctuation
+    text = re.sub(r'[^\w\s]', ' ', text)
+    
+    # 3. Collapse whitespace
+    return " ".join(text.split())
+
+def load_clinic_directory():
+    """
+    Loads all clinics and groups them by CITY for safer fuzzy matching.
+    
+    CLEANING LOGIC:
+    - If citycode is "Pilih Kota/Kab" or empty, it becomes '-'.
+    - This ensures generic placeholders group together.
+    
+    Returns: 
+        city_buckets: { 'JAKARTA': [ {id, name, clean, city_display}, ... ] }
+    """
+    city_buckets = defaultdict(list)
+    
+    # Fetch ID, Name, and City
+    query = text("SELECT id, clinicname, citycode FROM clinics")
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        for row in result:
+            c_id = str(row.id)
+            name = row.clinicname
+            raw_city = str(row.citycode).strip() if row.citycode else ""
+            
+            # --- CLEAN CITY CODE ---
+            # 1. Handle the specific placeholder "Pilih Kota/Kab" (case-insensitive check)
+            if raw_city.lower() == "pilih kota/kab" or not raw_city:
+                clean_city = "-"
+            else:
+                clean_city = raw_city
+            
+            # Use upper case for the bucket key to ensure case-insensitive grouping
+            bucket_key = clean_city.upper()
+            
+            city_buckets[bucket_key].append({
+                "id": c_id,
+                "name": name,
+                "clean": normalize_clinic_name(name),
+                "city_display": clean_city # Store the specific display version
+            })
+            
+    return city_buckets
+
 # === MCP TOOLS (Dynamic Data Fetching) ===
 @mcp.tool()
 def fetch_deduplicated_visit_report() -> str:
@@ -593,8 +655,6 @@ def fetch_visit_plans_by_salesman() -> str:
         
     return md
 
-# ... (Keep existing imports and helpers)
-
 @mcp.tool()
 def fetch_transaction_report_by_product() -> str:
     """
@@ -694,6 +754,80 @@ def fetch_transaction_report_by_product() -> str:
         
     return md
 
+@mcp.tool()
+def fetch_visit_plans_by_clinic() -> str:
+    """
+    Retrieves planned visits grouped by Clinic Name.
+    
+    Columns: | Clinic ID(s) | Clinic Name | Clinic Address (City) | Number of Visits |
+    """
+    # 1. Load Reference Data (Grouped by City)
+    city_buckets = load_clinic_directory()
+    
+    # 2. Fetch Raw Plan Counts
+    query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
+    visit_counts = defaultdict(int)
+    
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        for row in result:
+            visit_counts[str(row.cliniccode)] = row.c
+            
+    # 3. Entity Resolution (City-by-City)
+    final_output = []
+    
+    for bucket_key, clinics in city_buckets.items():
+        # Group duplicates within this specific city bucket
+        grouped_map = defaultdict(list)
+        
+        # Sort longest to shortest for better matching
+        clinics.sort(key=lambda x: len(x['clean']), reverse=True)
+        
+        for clinic in clinics:
+            core_name = clinic['clean']
+            if not core_name: continue 
+            
+            # Fuzzy match against keys IN THIS CITY only
+            potential_matches = list(grouped_map.keys())
+            match = get_fuzzy_match(core_name, potential_matches, threshold=0.88)
+            
+            if match:
+                grouped_map[match].append(clinic)
+            else:
+                grouped_map[core_name].append(clinic)
+        
+        # 4. Aggregate Counts
+        for clean_key, entries in grouped_map.items():
+            ids = [x['id'] for x in entries]
+            total_visits = sum(visit_counts.get(cid, 0) for cid in ids)
+            
+            if total_visits > 0:
+                # Pick best display name
+                display_name = max((x['name'] for x in entries), key=len)
+                
+                # Pick the city code for display (they are all the same in this bucket)
+                # We use the 'city_display' from the first entry
+                display_city = entries[0]['city_display']
+                
+                final_output.append({
+                    "ids": ", ".join(ids),
+                    "name": display_name,
+                    "city": display_city,
+                    "count": total_visits
+                })
+
+    # 5. Sort & Format
+    final_output.sort(key=lambda x: x['count'], reverse=True)
+    
+    md = "PLANNED VISITS REPORT (Grouped by Clinic):\n"
+    md += "| Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |\n"
+    md += "| :--- | :--- | :--- | :--- |\n"
+    
+    for row in final_output:
+        md += f"| {row['ids']} | {row['name']} | {row['city']} | {row['count']} |\n"
+        
+    return md
+
 # === MCP PROMPTS (Agent Instructions) ===
 @mcp.prompt()
 def generate_planned_visits_report_by_customer() -> str:
@@ -776,6 +910,25 @@ def generate_transaction_report_by_product() -> str:
     1. Normalizes messy product names based on the Product List.
     2. Links Transaction IDs to the Official Product List.
     3. Aggregates Units Sold and Revenue.
+    """
+
+@mcp.prompt()
+def generate_planned_visits_report_by_clinic() -> str:
+    """
+    Generates a prompt to request the planned visits report grouped by clinic.
+    """
+    return """
+    I need a Planned Visits Report grouped by Clinic.
+    
+    Please run the tool `fetch_visit_plans_by_clinic`.
+    
+    This tool automatically:
+    1. Distinguishes branches by City Code (replacing 'Pilih Kota/Kab' with '-').
+    2. Merges duplicate entries within the same city.
+    3. Aggregates the visit counts.
+    
+    The output will be a table with columns: 
+    | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
     """
 
 # Run the MCP server
