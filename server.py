@@ -8,4 +8,5 @@ import prompts
 # Run the MCP server
 if __name__ == "__main__":
     print("Starting CTBA MCP Server...")
-    mcp.run(transport="sse")
+    mcp.run(transport="streamable-http")
+    # mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)

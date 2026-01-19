@@ -1,0 +1,6 @@
+mcp
+uvicorn
+python-dotenv
+sqlalchemy
+pymysql
+cryptography
