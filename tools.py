@@ -11,24 +11,6 @@ import helpers
 def fetch_deduplicated_visit_report() -> str:
     """
     Retrieves a consolidated report of 'Planned Visits' grouped by Customer.
-    
-    Description:
-        This tool fetches raw visit data from the 'plans' table and resolves messy customer entities.
-        It performs 'Entity Resolution' by:
-        1. Normalizing names (stripping titles like 'drg', 'Sp.Ort').
-        2. Merging duplicate customer entries based on Fuzzy Name Matching.
-        3. Aggregating visit counts for these merged identities.
-
-    Parameters:
-        None. (The tool automatically fetches all available data from the database).
-
-    Returns:
-        str: A Markdown table with columns:
-            | Customer ID(s) | Customer Name | Number of Visits |
-    
-    When to use:
-        Use this tool when the user asks for "planned visits by customer", "who are we visiting", 
-        or a report on customer visit frequency. Do NOT use for sales/transactions.
     """
     visit_counts = defaultdict(int)
     query_plans = text("SELECT custcode, COUNT(*) as c FROM plans GROUP BY custcode")
@@ -81,24 +63,6 @@ def fetch_deduplicated_visit_report() -> str:
 def fetch_deduplicated_sales_report() -> str:
     """
     Retrieves a consolidated Sales Performance Report grouped by Salesman.
-
-    Description:
-        This tool aggregates transaction counts from the 'transactions' table.
-        It cleans messy salesman names by:
-        1. Splitting multi-salesman entries (e.g., 'Wilson/Gladys' -> credits both).
-        2. Resolving identities via Code (e.g., 'PS100') or Fuzzy Name Matching against the official User DB.
-        3. Grouping unmatched entries cleanly.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Sales User ID | Sales Name | Transaction Count |
-
-    When to use:
-        Use this tool when the user asks for "sales performance", "who sold the most", 
-        or "transaction counts by salesman".
     """
     id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
     query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
@@ -142,24 +106,6 @@ def fetch_deduplicated_sales_report() -> str:
 def fetch_transaction_report_by_customer_name() -> str:
     """
     Retrieves transaction counts grouped by normalized Customer Name.
-
-    Description:
-        This tool bridges the gap between 'transactions' and 'customers' via the 'acc_customers' table.
-        Logic:
-        1. Normalizes Transaction IDs (stripping prefixes like 'B-').
-        2. Links IDs to Accounting Names.
-        3. Fuzzy matches Accounting Names to the Official Customer Database.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Customer ID | Customer Name | Transaction Count |
-
-    When to use:
-        Use this tool when the user asks for "sales by customer", "top buying customers", 
-        or "who bought the most".
     """
     official_customers = helpers.load_customer_directory()
     cid_to_name_map = helpers.load_acc_cid_map()
@@ -209,21 +155,6 @@ def fetch_transaction_report_by_customer_name() -> str:
 def fetch_visit_plans_by_salesman() -> str:
     """
     Retrieves the count of 'Planned Visits' grouped by Salesman.
-
-    Description:
-        Fetches data from the 'plans' table and resolves the User ID to the Official User Name.
-        Unlike the sales report, this deals strictly with *intent* to visit, not completed sales.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Sales User ID | Sales Name | Visit Count |
-
-    When to use:
-        Use this tool when the user asks for "salesman plans", "who is planning to visit", 
-        or "visit quota".
     """
     id_map, _, _, _ = helpers.load_official_users_map()
     query = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
@@ -249,24 +180,6 @@ def fetch_visit_plans_by_salesman() -> str:
 def fetch_transaction_report_by_product() -> str:
     """
     Retrieves sales performance grouped by Product (Units Sold & Revenue).
-
-    Description:
-        Aggregates product sales with intelligent normalization:
-        1. Exact ID matching (Transaction Item ID -> Product ID).
-        2. Containment Logic (e.g., 'Angel Aligner' matches inside 'Angel Aligner Select').
-        3. Fuzzy matching for typos.
-        4. Calculates 'Units' from quantity and 'Revenue' from amount (fixed as integer).
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Product Name | Units Sold (Qty) | Total Revenue |
-
-    When to use:
-        Use this tool when the user asks for "product sales", "what are we selling", 
-        "top products", or revenue by item.
     """
     id_to_name, official_products = helpers.load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
@@ -336,22 +249,6 @@ def fetch_transaction_report_by_product() -> str:
 def fetch_visit_plans_by_clinic() -> str:
     """
     Retrieves 'Planned Visits' grouped by Clinic, distinguishing branches by City.
-
-    Description:
-        1. Groups clinics by City Code (handling 'Pilih Kota/Kab' placeholder).
-        2. Merges duplicate clinic names only within the same city.
-        3. Aggregates visit counts.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
-
-    When to use:
-        Use this tool when the user asks for "visits by clinic", "clinic coverage", 
-        or distinct branches.
     """
     city_buckets = helpers.load_clinic_directory()
     query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
@@ -395,21 +292,6 @@ def fetch_visit_plans_by_clinic() -> str:
 def fetch_report_counts_by_salesman() -> str:
     """
     Retrieves the count of *Completed* Visits (Reports) grouped by Salesman.
-
-    Description:
-        This measures actual execution, not just intent.
-        It joins 'reports' -> 'plans' -> 'users' to count how many reports were submitted.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Sales User ID | Salesman Name | Total Reports |
-
-    When to use:
-        Use this tool when the user asks for "completed visits", "actual visits", 
-        or "reports submitted" by salesman.
     """
     id_map, _, _, _ = helpers.load_official_users_map()
     query = text("SELECT p.userid, COUNT(r.id) as c FROM reports r JOIN plans p ON r.idplan = p.id GROUP BY p.userid")
@@ -434,24 +316,6 @@ def fetch_report_counts_by_salesman() -> str:
 def fetch_comprehensive_salesman_performance() -> str:
     """
     Retrieves a 360-degree 'Scorecard' for Salesmen (Plans vs Visits vs Sales).
-
-    Description:
-        Combines data from three sources into one view:
-        1. Plans (Intent).
-        2. Reports (Execution).
-        3. Transactions (Result - cleaned and resolved).
-        Also calculates ratios: 'Plan to Visit Ratio' and 'Visit to Transaction Ratio'.
-
-    Parameters:
-        None.
-
-    Returns:
-        str: A Markdown table with columns:
-            | Sales User ID | Salesman Name | Total Plans | Total Visits | Total Transactions | Plan to Visit Ratio | Visit to Transaction Ratio |
-
-    When to use:
-        Use this tool when the user asks for a "scorecard", "performance summary", "KPIs", 
-        "ratios", or a holistic comparison of a salesman's activity.
     """
     id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
     master_data = defaultdict(lambda: {'plans': 0, 'reports': 0, 'transactions': 0})
@@ -512,69 +376,37 @@ def fetch_salesman_visit_history(salesman_name: str) -> str:
         salesman_name (str): The name or code of the salesman (e.g., "Wilson", "PS100").
 
     Returns:
-        str: A text log containing:
-            - Salesman Details
-            - Total Transaction Count
-            - Total Visit Count
-            - A list of the actual visit notes (text) for analysis.
+        str: A text log containing stats and a list of visit notes.
 
     When to use:
         Use when the user asks "Why are [Name]'s sales low?", "Analyze [Name]'s visits", 
         or "Check the effectiveness of [Name]".
     """
-    # 1. Identify the Salesman
-    target_id, official_name = helpers.find_salesman_id_by_name(salesman_name)
-    
-    if not target_id:
-        return f"Error: Could not find a salesman matching '{salesman_name}'. Please check the name or code."
+    return helpers.fetch_single_salesman_data(salesman_name)
 
-    # 2. Get Transaction Count (Reusing resolution logic for accuracy)
-    # We scan transactions to count how many belong to this specific ID
-    id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
-    transaction_count = 0
-    
-    query_trans = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
-    with engine.connect() as conn:
-        for row in conn.execute(query_trans):
-            parts = re.split(r'[/\&,]', str(row.salesman_name))
-            for part in parts:
-                part = part.strip()
-                if not part: continue
-                resolved = helpers.resolve_salesman_identity(part, code_map, digit_map, name_list)
-                if resolved == target_id:
-                    transaction_count += row.c
+@mcp.tool()
+def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
+    """
+    Fetches side-by-side visit notes and transaction stats for TWO salesmen.
 
-    # 3. Get Visit Notes (Joined from Reports -> Plans)
-    # Limit to 50 most recent to save context window
-    visit_notes = []
-    query_notes = text("""
-        SELECT r.visitnote 
-        FROM reports r
-        JOIN plans p ON r.idplan = p.id
-        WHERE p.userid = :uid
-        ORDER BY r.id DESC
-        LIMIT 50
-    """)
-    
-    with engine.connect() as conn:
-        result = conn.execute(query_notes, {"uid": target_id})
-        for row in result:
-            if row.visitnote and str(row.visitnote).strip():
-                visit_notes.append(f"- {str(row.visitnote).strip()}")
+    Description:
+        Designed for comparative analysis.
+        1. Resolves identities for both Salesman A and Salesman B.
+        2. Fetches transaction counts and visit notes for BOTH.
+        3. Combines them into a single report for the LLM to analyze.
 
-    # 4. Format Output
-    total_visits = len(visit_notes)
+    Parameters:
+        salesman_a (str): Name/Code of the first salesman.
+        salesman_b (str): Name/Code of the second salesman.
+
+    Returns:
+        str: A combined text log with two distinct sections (one for each salesman).
+
+    When to use:
+        Use when the user asks to "compare Wilson and Gladys", "who is better between A and B",
+        or "compare visit effectiveness of A vs B".
+    """
+    report_a = helpers.fetch_single_salesman_data(salesman_a)
+    report_b = helpers.fetch_single_salesman_data(salesman_b)
     
-    output = f"=== PERFORMANCE ANALYSIS DATA: {official_name} ===\n"
-    output += f"User ID: {target_id}\n"
-    output += f"Total Verified Transactions: {transaction_count}\n"
-    output += f"Total Visit Reports Found (Sample): {total_visits}\n"
-    output += "--------------------------------------------------\n"
-    output += "RECENT VISIT NOTES (For Qualitative Analysis):\n"
-    
-    if visit_notes:
-        output += "\n".join(visit_notes)
-    else:
-        output += "(No visit notes found)"
-        
-    return output
+    return f"COMPARISON DATASET:\n\n{report_a}\n\n{report_b}"

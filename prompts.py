@@ -97,3 +97,30 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
         - Are they making too many "empty visits" (visits where the doctor isn't there)?
         - Provide 1-2 actionable recommendations based on the notes.
     """
+
+@mcp.prompt()
+def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
+    """
+    Generates a prompt to compare the performance and effectiveness of two salesmen.
+    """
+    return f"""
+    Act as a Senior Sales Manager. I need a comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
+    
+    Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}'.
+    
+    Once you have the data, perform a side-by-side analysis:
+    
+    ### 1. Quantitative Comparison (The Numbers)
+    - Compare their **Conversion Ratios** (Total Transactions / Total Visits).
+    - Who has the higher volume of activity?
+    
+    ### 2. Qualitative Comparison (The "Why")
+    Analyze the `visitnotes` (Bahasa Indonesia) for both.
+    - **{salesman_a}**: What are their common obstacles? (e.g., "Dokter cuti", "Stok full")? What are their strengths?
+    - **{salesman_b}**: How does their situation differ? Do they meet doctors more often?
+    
+    ### 3. Verdict & Conclusion
+    - Who is the more effective salesman right now?
+    - Is the lower-performing salesman lazy (no visits) or just unlucky (doctors unavailable)?
+    - Give a specific recommendation for each person.
+    """

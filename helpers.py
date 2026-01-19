@@ -2,7 +2,7 @@ import re
 import difflib
 from collections import defaultdict
 from sqlalchemy import text
-from database import engine  # Import engine from our new database file
+from database import engine
 
 # --- STRING NORMALIZATION ---
 
@@ -173,19 +173,73 @@ def load_clinic_directory():
             })
     return city_buckets
 
-# --- SEARCH HELPERS ---
+# --- ANALYTICAL HELPERS ---
 
 def find_salesman_id_by_name(name_query: str):
     """
     Searches for a salesman's Official ID based on a name string.
-    Returns the User ID (str) or None.
+    Returns: (id, name) or (None, None)
     """
     id_map, code_map, digit_map, name_list = load_official_users_map()
-    
-    # 1. Try resolving using the standard resolution logic (handles codes, fuzzy)
     resolved_id = resolve_salesman_identity(name_query, code_map, digit_map, name_list)
-    
     if resolved_id:
         return resolved_id, id_map[resolved_id]['name']
-        
     return None, None
+
+def fetch_single_salesman_data(salesman_name: str) -> str:
+    """
+    Retrieves transaction count and visit notes for a single salesman.
+    Used by analysis tools to generate reports.
+    """
+    # 1. Identify Salesman
+    target_id, official_name = find_salesman_id_by_name(salesman_name)
+    
+    if not target_id:
+        return f"Error: Could not find salesman '{salesman_name}'. Please check the name or code."
+
+    # 2. Get Transaction Count
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    transaction_count = 0
+    
+    query_trans = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+    with engine.connect() as conn:
+        for row in conn.execute(query_trans):
+            parts = re.split(r'[/\&,]', str(row.salesman_name))
+            for part in parts:
+                part = part.strip()
+                if not part: continue
+                resolved = resolve_salesman_identity(part, code_map, digit_map, name_list)
+                if resolved == target_id:
+                    transaction_count += row.c
+
+    # 3. Get Visit Notes
+    visit_notes = []
+    query_notes = text("""
+        SELECT r.visitnote 
+        FROM reports r
+        JOIN plans p ON r.idplan = p.id
+        WHERE p.userid = :uid
+        ORDER BY r.id DESC
+        LIMIT 50
+    """)
+    
+    with engine.connect() as conn:
+        result = conn.execute(query_notes, {"uid": target_id})
+        for row in result:
+            if row.visitnote and str(row.visitnote).strip():
+                visit_notes.append(f"- {str(row.visitnote).strip()}")
+
+    total_visits = len(visit_notes)
+    
+    # Format Output
+    output = f"=== DATA FOR: {official_name} (ID: {target_id}) ===\n"
+    output += f"Total Transactions: {transaction_count}\n"
+    output += f"Total Visit Reports: {total_visits}\n"
+    output += "Recent Visit Notes:\n"
+    if visit_notes:
+        output += "\n".join(visit_notes)
+    else:
+        output += "(No notes found)"
+    output += "\n" + "="*40 + "\n"
+    
+    return output
