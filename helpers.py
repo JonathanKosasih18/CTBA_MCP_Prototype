@@ -173,3 +173,19 @@ def load_clinic_directory():
             })
     return city_buckets
 
+# --- SEARCH HELPERS ---
+
+def find_salesman_id_by_name(name_query: str):
+    """
+    Searches for a salesman's Official ID based on a name string.
+    Returns the User ID (str) or None.
+    """
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    # 1. Try resolving using the standard resolution logic (handles codes, fuzzy)
+    resolved_id = resolve_salesman_identity(name_query, code_map, digit_map, name_list)
+    
+    if resolved_id:
+        return resolved_id, id_map[resolved_id]['name']
+        
+    return None, None

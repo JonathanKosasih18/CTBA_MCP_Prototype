@@ -496,3 +496,85 @@ def fetch_comprehensive_salesman_performance() -> str:
     for row in output_rows:
         md += f"| {row['code']} | {row['name']} | {row['plans']} | {row['reports']} | {row['transactions']} | {row['ratio_pv']:.2f} | {row['ratio_vt']:.2f} |\n"
     return md
+
+@mcp.tool()
+def fetch_salesman_visit_history(salesman_name: str) -> str:
+    """
+    Fetches detailed visit notes and transaction stats for a SPECIFIC salesman.
+
+    Description:
+        Used for deep-dive analysis of a single salesman's performance.
+        1. Identifies the salesman ID from the input name.
+        2. Fetches their total transaction count (using identity resolution).
+        3. Fetches their recent 'visitnote' entries from the reports table.
+    
+    Parameters:
+        salesman_name (str): The name or code of the salesman (e.g., "Wilson", "PS100").
+
+    Returns:
+        str: A text log containing:
+            - Salesman Details
+            - Total Transaction Count
+            - Total Visit Count
+            - A list of the actual visit notes (text) for analysis.
+
+    When to use:
+        Use when the user asks "Why are [Name]'s sales low?", "Analyze [Name]'s visits", 
+        or "Check the effectiveness of [Name]".
+    """
+    # 1. Identify the Salesman
+    target_id, official_name = helpers.find_salesman_id_by_name(salesman_name)
+    
+    if not target_id:
+        return f"Error: Could not find a salesman matching '{salesman_name}'. Please check the name or code."
+
+    # 2. Get Transaction Count (Reusing resolution logic for accuracy)
+    # We scan transactions to count how many belong to this specific ID
+    id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
+    transaction_count = 0
+    
+    query_trans = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+    with engine.connect() as conn:
+        for row in conn.execute(query_trans):
+            parts = re.split(r'[/\&,]', str(row.salesman_name))
+            for part in parts:
+                part = part.strip()
+                if not part: continue
+                resolved = helpers.resolve_salesman_identity(part, code_map, digit_map, name_list)
+                if resolved == target_id:
+                    transaction_count += row.c
+
+    # 3. Get Visit Notes (Joined from Reports -> Plans)
+    # Limit to 50 most recent to save context window
+    visit_notes = []
+    query_notes = text("""
+        SELECT r.visitnote 
+        FROM reports r
+        JOIN plans p ON r.idplan = p.id
+        WHERE p.userid = :uid
+        ORDER BY r.id DESC
+        LIMIT 50
+    """)
+    
+    with engine.connect() as conn:
+        result = conn.execute(query_notes, {"uid": target_id})
+        for row in result:
+            if row.visitnote and str(row.visitnote).strip():
+                visit_notes.append(f"- {str(row.visitnote).strip()}")
+
+    # 4. Format Output
+    total_visits = len(visit_notes)
+    
+    output = f"=== PERFORMANCE ANALYSIS DATA: {official_name} ===\n"
+    output += f"User ID: {target_id}\n"
+    output += f"Total Verified Transactions: {transaction_count}\n"
+    output += f"Total Visit Reports Found (Sample): {total_visits}\n"
+    output += "--------------------------------------------------\n"
+    output += "RECENT VISIT NOTES (For Qualitative Analysis):\n"
+    
+    if visit_notes:
+        output += "\n".join(visit_notes)
+    else:
+        output += "(No visit notes found)"
+        
+    return output
