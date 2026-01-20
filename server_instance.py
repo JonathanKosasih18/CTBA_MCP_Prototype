@@ -1,4 +1,4 @@
 from mcp.server.fastmcp import FastMCP
 
-# Initialize FastMCP server instance
-mcp = FastMCP("CTBA MCP Proto")
+# Initialize the MCP Server Instance
+mcp = FastMCP("CTBA MCP Prototype")

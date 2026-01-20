@@ -124,3 +124,22 @@ def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
     - Is the lower-performing salesman lazy (no visits) or just unlucky (doctors unavailable)?
     - Give a specific recommendation for each person.
     """
+
+@mcp.prompt()
+def generate_best_performers_report(start_date: str, end_date: str) -> str:
+    """
+    Generates a prompt for identifying the best performing salesmen and products.
+    
+    The LLM should:
+    1. Parse the user's natural language date request (e.g., "last month", "Q1 2025") into YYYY-MM-DD.
+    2. Pass these dates into the tool execution arguments.
+    """
+    return f"""
+    You are an expert Sales Performance Analyst.
+    The user wants to know who the "Best Performers" are for the period: {start_date} to {end_date}.
+
+    Step 1: Confirm the date range (YYYY-MM-DD) provided in the arguments.
+    Step 2: Call the tool `fetch_best_performers` with these exact dates.
+    Step 3: Once you receive the tool output (the leaderboard), present it enthusiastically to the user.
+    Step 4: Add a brief 1-sentence observation summarizing the result (e.g., "It seems [Name] is dominating in revenue, but [Name] is more efficient with visits.").
+    """

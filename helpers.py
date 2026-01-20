@@ -243,3 +243,98 @@ def fetch_single_salesman_data(salesman_name: str) -> str:
     output += "\n" + "="*40 + "\n"
     
     return output
+
+def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
+    """
+    Executes multiple queries to determine the best performers in various categories
+    within a date range.
+    """
+    stats = {} # {salesman_name: {'visits': 0, 'trans_count': 0, 'revenue': 0}}
+    top_product = "N/A"
+    
+    with engine.connect() as conn:
+        # 1. Fetch Visit Counts (linked via plans -> users)
+        visit_query = text("""
+            SELECT u.name, COUNT(r.id) as visit_count
+            FROM reports r
+            JOIN plans p ON r.idplan = p.id
+            JOIN users u ON p.userid = u.id
+            WHERE p.date BETWEEN :start AND :end
+            GROUP BY u.name
+        """)
+        
+        result_visits = conn.execute(visit_query, {"start": start_date, "end": end_date})
+        for row in result_visits:
+            name = row.name
+            if name not in stats:
+                stats[name] = {'visits': 0, 'trans_count': 0, 'revenue': 0}
+            stats[name]['visits'] = row.visit_count
+
+        # 2. Fetch Transaction Counts & Revenue
+        trans_query = text("""
+            SELECT salesman_name, COUNT(*) as t_count, SUM(amount * qty) as revenue
+            FROM transactions
+            WHERE inv_date BETWEEN :start AND :end
+            GROUP BY salesman_name
+        """)
+        
+        result_trans = conn.execute(trans_query, {"start": start_date, "end": end_date})
+        for row in result_trans:
+            name = row.salesman_name
+            if name: # Ensure name is not None
+                if name not in stats:
+                    stats[name] = {'visits': 0, 'trans_count': 0, 'revenue': 0}
+                stats[name]['trans_count'] = row.t_count
+                stats[name]['revenue'] = row.revenue
+
+        # 3. Fetch Most Sold Product
+        prod_query = text("""
+            SELECT prodname, SUM(qty) as total_qty
+            FROM transactions
+            WHERE inv_date BETWEEN :start AND :end
+            GROUP BY product
+            ORDER BY total_qty DESC
+            LIMIT 1
+        """)
+        result_prod = conn.execute(prod_query, {"start": start_date, "end": end_date}).fetchone()
+        if result_prod:
+            top_product = f"{result_prod.prodname} ({result_prod.total_qty} units)"
+
+    # --- Determine Winners ---
+    if not stats:
+        return f"No performance data found between {start_date} and {end_date}."
+
+    winner_visits = max(stats.items(), key=lambda x: x[1]['visits'])
+    winner_trans_count = max(stats.items(), key=lambda x: x[1]['trans_count'])
+    winner_revenue = max(stats.items(), key=lambda x: x[1]['revenue'])
+    
+    # Calculate Conversion Ratio (Transactions / Visits)
+    # Filter out those with 0 visits to avoid ZeroDivisionError
+    valid_ratios = {
+        k: (v['trans_count'] / v['visits']) * 100 
+        for k, v in stats.items() 
+        if v['visits'] > 0
+    }
+    
+    if valid_ratios:
+        winner_conversion = max(valid_ratios.items(), key=lambda x: x[1])
+        conv_str = f"**{winner_conversion[0]}** with {winner_conversion[1]:.2f}%"
+    else:
+        conv_str = "No valid visits recorded to calculate conversion."
+
+    # --- Format Output ---
+    report = f"""
+### 🏆 Best Performers Report
+**Period:** {start_date} to {end_date}
+
+| Category | Winner | Stat |
+| :--- | :--- | :--- |
+| **Highest Visit Count** | **{winner_visits[0]}** | {winner_visits[1]['visits']} visits |
+| **Highest Transaction Count** | **{winner_trans_count[0]}** | {winner_trans_count[1]['trans_count']} transactions |
+| **Highest Revenue** | **{winner_revenue[0]}** | ${winner_revenue[1]['revenue']:,.2f} |
+| **Best Conversion Ratio** | {conv_str} | (Trans / Visits) |
+
+#### 📦 Most Popular Product
+**{top_product}**
+"""
+    return report

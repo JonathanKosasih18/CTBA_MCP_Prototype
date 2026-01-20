@@ -410,3 +410,29 @@ def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
     report_b = helpers.fetch_single_salesman_data(salesman_b)
     
     return f"COMPARISON DATASET:\n\n{report_a}\n\n{report_b}"
+
+@mcp.tool()
+def fetch_best_performers(start_date: str, end_date: str) -> str:
+    """
+    Fetches a leaderboard of best performing salesmen and products for a specific time period.
+    
+    Description:
+        Identifies the top performers across four categories:
+        1. Visit Volume (Most visits completed).
+        2. Transaction Volume (Most sales transactions).
+        3. Revenue Generation (Highest total sales value).
+        4. Conversion Efficiency (Highest ratio of Transactions to Visits).
+        Also identifies the single most sold product by quantity.
+    
+    Parameters:
+        start_date (str): The start of the analysis period (Format: YYYY-MM-DD).
+        end_date (str): The end of the analysis period (Format: YYYY-MM-DD).
+
+    Returns:
+        str: A Markdown formatted leaderboard summary.
+
+    When to use:
+        Use when the user asks "Who is the best salesman?", "Show me the top performers for January",
+        or "Who had the highest conversion rate last year?".
+    """
+    return helpers.fetch_best_performers_logic(start_date, end_date)
