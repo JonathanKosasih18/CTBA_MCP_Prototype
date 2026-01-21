@@ -14,4 +14,11 @@ pyproject.toml
 
 # Data
 u738159060_bam.sql
+real_data.sql
+real_db.sql
 customers.csv
+
+# Other files
+/scripts
+/client
+/hidden

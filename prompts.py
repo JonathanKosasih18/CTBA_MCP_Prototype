@@ -5,7 +5,7 @@ def generate_planned_visits_report_by_customer() -> str:
     """Generates a prompt to request the planned visits report grouped by customer."""
     return """
     I need a Planned Visits Report grouped by Customer.
-    Please run the tool `fetch_deduplicated_visit_report`.
+    Please run the tool `fetch_deduplicated_visit_report` with the argument `output_format=1`.
     Output the result exactly as the tool returns it (Markdown Table).
     """
 
@@ -14,7 +14,7 @@ def generate_planned_visits_report_by_salesman() -> str:
     """Generates a prompt to request the planned visits report grouped by salesman."""
     return """
     I need a Planned Visits Report grouped by Salesman.
-    Please run the tool `fetch_visit_plans_by_salesman`.
+    Please run the tool `fetch_visit_plans_by_salesman` with the argument `output_format=1`.
     Output the table exactly as returned by the tool.
     """
 
@@ -23,7 +23,7 @@ def generate_planned_visits_report_by_clinic() -> str:
     """Generates a prompt to request the planned visits report grouped by clinic."""
     return """
     I need a Planned Visits Report grouped by Clinic.
-    Please run the tool `fetch_visit_plans_by_clinic`.
+    Please run the tool `fetch_visit_plans_by_clinic` with the argument `output_format=1`.
     The output will be a table with columns: 
     | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
     """
@@ -33,7 +33,7 @@ def generate_transaction_report_by_salesmen() -> str:
     """Generates a prompt to request the consolidated sales report."""
     return """
     I need the Sales Performance Report.
-    Please run the tool `fetch_deduplicated_sales_report`.
+    Please run the tool `fetch_deduplicated_sales_report` with the argument `output_format=1`.
     Display the returned table exactly as is.
     """
 
@@ -42,7 +42,7 @@ def generate_transaction_report_by_customer() -> str:
     """Generates a prompt to request the customer transaction report."""
     return """
     I need the Transaction Report grouped by Customer Name.
-    Please run the tool `fetch_transaction_report_by_customer_name`.
+    Please run the tool `fetch_transaction_report_by_customer_name` with the argument `output_format=1`.
     """
 
 @mcp.prompt()
@@ -50,7 +50,7 @@ def generate_transaction_report_by_product() -> str:
     """Generates a prompt to request the product sales report."""
     return """
     I need the Transaction Report grouped by Product.
-    Please run the tool `fetch_transaction_report_by_product`.
+    Please run the tool `fetch_transaction_report_by_product` with the argument `output_format=1`.
     """
 
 @mcp.prompt()
@@ -58,7 +58,7 @@ def generate_report_counts_by_salesman() -> str:
     """Generates a prompt to request the count of completed visit reports grouped by salesman."""
     return """
     I need a Report on Completed Visits (Reports) grouped by Salesman.
-    Please run the tool `fetch_report_counts_by_salesman`.
+    Please run the tool `fetch_report_counts_by_salesman` with the argument `output_format=1`.
     Output the table exactly as returned by the tool.
     """
 
@@ -67,7 +67,7 @@ def generate_comprehensive_salesman_report() -> str:
     """Generates a prompt for the all-in-one Salesman Performance Scorecard."""
     return """
     I need the Comprehensive Salesman Performance Report (Scorecard).
-    Please run the tool `fetch_comprehensive_salesman_performance`.
+    Please run the tool `fetch_comprehensive_salesman_performance` with the argument `output_format=1`.
     Display the result exactly as returned.
     """
 
@@ -79,7 +79,7 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
     return f"""
     Act as a Sales Performance Analyst. I need you to evaluate the effectiveness of salesman: {salesman_name}.
     
-    Please run the tool `fetch_salesman_visit_history` with the argument '{salesman_name}'.
+    Please run the tool `fetch_salesman_visit_history` with the arguments '{salesman_name}' and `output_format=1`.
     
     Once you have the data, perform the following analysis:
     
@@ -112,7 +112,7 @@ def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
     return f"""
     Act as a Senior Sales Manager. I need a clear comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
     
-    Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}'.
+    Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}' and `output_format=1`.
     
     After retrieving data, produce the following sections:
 

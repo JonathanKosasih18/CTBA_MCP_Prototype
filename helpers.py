@@ -223,17 +223,21 @@ def find_salesman_id_by_name(name_query: str):
         return resolved_id, id_map[resolved_id]['name']
     return None, None
 
-def fetch_single_salesman_data(salesman_name: str) -> str:
+def fetch_single_salesman_data(salesman_name: str, output_format: int = 0):
     """
     Retrieves transaction count and visit notes for a single salesman.
-    Used by analysis tools to generate reports.
+    Used by analysis tools to generate reports. 
+    Can generate output in Markdown format (1) or JSON dictionary format (0).
     """
     # 1. Identify Salesman
     target_id, official_name = find_salesman_id_by_name(salesman_name)
     
     if not target_id:
-        return f"Error: Could not find salesman '{salesman_name}'. Please check the name or code."
-
+        error_msg = f"Error: Could not find salesman '{salesman_name}'."
+        if output_format == 0:
+            return {"error": error_msg}
+        return error_msg
+    
     # 2. Get Transaction Count
     id_map, code_map, digit_map, name_list = load_official_users_map()
     transaction_count = 0
@@ -256,7 +260,7 @@ def fetch_single_salesman_data(salesman_name: str) -> str:
         FROM reports r
         JOIN plans p ON r.idplan = p.id
         WHERE p.userid = :uid
-        ORDER BY r.id DESC
+        ORDER BY r.date DESC
         LIMIT 50
     """)
     
@@ -268,23 +272,35 @@ def fetch_single_salesman_data(salesman_name: str) -> str:
 
     total_visits = len(visit_notes)
     
-    # Format Output
+    # --- RETURN JSON (Format 0) ---
+    if output_format == 0:
+        return {
+            "id": target_id,
+            "name": official_name,
+            "total_transactions": transaction_count,
+            "total_visits": total_visits,
+            "recent_notes": visit_notes
+        }
+    
+    # --- RETURN MARKDOWN (Format 1) ---
     output = f"=== DATA FOR: {official_name} (ID: {target_id}) ===\n"
     output += f"Total Transactions: {transaction_count}\n"
     output += f"Total Visit Reports: {total_visits}\n"
     output += "Recent Visit Notes:\n"
     if visit_notes:
-        output += "\n".join(visit_notes)
+        formatted_notes = [f"- {note}" for note in visit_notes]
+        output += "\n".join(formatted_notes)
     else:
         output += "(No notes found)"
     output += "\n" + "="*40 + "\n"
     
     return output
 
-def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
+def fetch_best_performers_logic(start_date: str, end_date: str, output_format: int = 0):
     """
     Determines best performers with rigorous Identity Resolution for Salesmen
     and Fuzzy Matching for Products.
+    Can generate output in Markdown format (1) or JSON dictionary format (0).
     """
     from sqlalchemy import text
     from collections import defaultdict
@@ -334,7 +350,6 @@ def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
 
             # --- A. RESOLVE SALESMAN ---
             resolved_id = resolve_salesman_identity(raw_salesman, code_map, digit_map, name_list)
-            
             target_key = None
             if resolved_id:
                 target_key = resolved_id
@@ -361,7 +376,6 @@ def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
                         product_stats[official['name']] += qty
                         match_found = True
                         break
-                
                 if not match_found:
                     fuzzy_match = get_fuzzy_match(clean_prod, target_product_cleans, threshold=0.75)
                     if fuzzy_match:
@@ -369,39 +383,45 @@ def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
                         if official_entry:
                             product_stats[official_entry['name']] += qty
                             match_found = True
-
             if not match_found and clean_prod:
                 product_stats[clean_prod.title()] += qty
 
     # --- 4. CALCULATE WINNERS ---
-    if not stats:
-        return f"No performance data found between {start_date} and {end_date}."
-
     stats_list = list(stats.values())
-
-    # Safely get max values
+    
+    # Calculate Winners
     winner_visits = max(stats_list, key=lambda x: x['visits']) if stats_list else None
     winner_trans = max(stats_list, key=lambda x: x['trans']) if stats_list else None
     winner_revenue = max(stats_list, key=lambda x: x['rev']) if stats_list else None
     
-    # Calculate Conversion
     eligible_conv = [s for s in stats_list if s['visits'] > 0]
-    if eligible_conv:
-        winner_conv = max(eligible_conv, key=lambda x: x['trans'] / x['visits'])
-        ratio = (winner_conv['trans'] / winner_conv['visits']) * 100
-        conv_str = f"**{winner_conv['name']}** ({ratio:.2f}%)"
-    else:
-        conv_str = "N/A"
-
-    # Best Product
-    if product_stats:
-        best_prod_name = max(product_stats, key=product_stats.get)
-        best_prod_qty = product_stats[best_prod_name]
-        top_product_str = f"{best_prod_name} ({best_prod_qty} units)"
-    else:
-        top_product_str = "No products sold"
+    winner_conv = max(eligible_conv, key=lambda x: x['trans'] / x['visits']) if eligible_conv else None
+    
+    best_prod_name = max(product_stats, key=product_stats.get) if product_stats else "N/A"
+    best_prod_qty = product_stats[best_prod_name] if product_stats else 0
 
     # --- 5. FORMAT OUTPUT ---
+    # --- RETURN JSON (Format 0) ---
+    if output_format == 0:
+        return {
+            "period": {"start": start_date, "end": end_date},
+            "most_visits": winner_visits if winner_visits else None,
+            "most_transactions": winner_trans if winner_trans else None,
+            "highest_revenue": winner_revenue if winner_revenue else None,
+            "best_conversion": {
+                "name": winner_conv['name'],
+                "ratio": (winner_conv['trans'] / winner_conv['visits']) * 100
+            } if winner_conv else None,
+            "popular_product": {
+                "name": best_prod_name,
+                "qty": best_prod_qty
+            }
+        }
+
+    # --- RETURN MARKDOWN (Format 1) ---
+    conv_str = f"**{winner_conv['name']}** ({(winner_conv['trans'] / winner_conv['visits']) * 100:.2f}%)" if winner_conv else "N/A"
+    top_product_str = f"{best_prod_name} ({best_prod_qty} units)"
+
     md = f"""
 ### 🏆 Best Performers ({start_date} to {end_date})
 
