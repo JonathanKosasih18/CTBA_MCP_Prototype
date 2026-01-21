@@ -1,4 +1,7 @@
 import re
+import datetime
+import pytz
+from typing import Optional
 from collections import defaultdict
 from sqlalchemy import text
 from server_instance import mcp
@@ -10,53 +13,65 @@ import helpers
 @mcp.tool()
 def fetch_deduplicated_visit_report() -> str:
     """
-    Retrieves a consolidated report of 'Planned Visits' grouped by Customer.
+    Retrieves a consolidated report of 'Planned Visits' grouped by standardized Customer ID (CID).
     """
+    # 1. Get Visit Counts by Internal ID (customers.id)
     visit_counts = defaultdict(int)
     query_plans = text("SELECT custcode, COUNT(*) as c FROM plans GROUP BY custcode")
     with engine.connect() as conn:
         for row in conn.execute(query_plans):
             visit_counts[str(row.custcode)] = row.c
 
-    customers = []
-    query_cust = text("SELECT id, custname, phone FROM customers")
+    # 2. Get Internal ID to Name Map
+    internal_customers = []
+    query_cust = text("SELECT id, custname FROM customers")
     with engine.connect() as conn:
         for row in conn.execute(query_cust):
-            customers.append({
+            internal_customers.append({
                 "id": str(row.id),
-                "name": row.custname,
-                "phone": row.phone
+                "clean": helpers.normalize_name(row.custname)
             })
 
-    grouped_map = defaultdict(list)
-    for cust in customers:
-        core_name = helpers.normalize_name(cust['name'])
-        if not core_name: continue
-        potential_matches = [k for k in grouped_map.keys() if k and k[0] == core_name[0]]
-        match = helpers.get_fuzzy_match(core_name, potential_matches, threshold=0.92)
-        if match:
-            grouped_map[match].append(cust)
+    # 3. Get Name to CID Map (Bridging the gap)
+    name_to_cid_map = helpers.load_name_to_cid_map()
+    available_cid_names = list(name_to_cid_map.keys())
+
+    # 4. Aggregate by CID
+    cid_counts = defaultdict(int)
+
+    for cust in internal_customers:
+        internal_id = cust['id']
+        clean_name = cust['clean']
+        count = visit_counts.get(internal_id, 0)
+        
+        if count == 0 or not clean_name: 
+            continue
+
+        # Try exact match first
+        found_cid = name_to_cid_map.get(clean_name)
+
+        # If no exact match, try fuzzy match
+        if not found_cid:
+            match = helpers.get_fuzzy_match(clean_name, available_cid_names, threshold=0.88)
+            if match:
+                found_cid = name_to_cid_map[match]
+        
+        # Aggregate
+        if found_cid:
+            cid_counts[found_cid] += count
         else:
-            grouped_map[core_name].append(cust)
+            # Fallback if we absolutely cannot find a CID
+            cid_counts[f"[No CID] {internal_id}"] += count
 
-    final_rows = []
-    for core_name, entries in grouped_map.items():
-        ids = [x['id'] for x in entries]
-        total_visits = sum(visit_counts.get(cust_id, 0) for cust_id in ids)
-        display_name = max((x['name'] for x in entries), key=len)
-        if total_visits > 0:
-            final_rows.append({
-                "ids": "; ".join(ids),
-                "name": display_name,
-                "count": total_visits
-            })
-    
+    # 5. Format Output (2 Columns Only)
+    final_rows = [{"id": k, "count": v} for k, v in cid_counts.items()]
     final_rows.sort(key=lambda x: x['count'], reverse=True)
-    md = "CONSOLIDATED VISIT REPORT (Auto-Deduplicated):\n"
-    md += "| Customer ID(s) | Customer Name | Number of Visits |\n"
-    md += "| :--- | :--- | :--- |\n"
+
+    md = "PLANNED VISITS REPORT (By Customer ID):\n"
+    md += "| Customer ID | Visit Count |\n"
+    md += "| :--- | :--- |\n"
     for row in final_rows:
-        md += f"| {row['ids']} | {row['name']} | {row['count']} |\n"
+        md += f"| {row['id']} | {row['count']} |\n"
     return md
 
 @mcp.tool()
@@ -105,50 +120,33 @@ def fetch_deduplicated_sales_report() -> str:
 @mcp.tool()
 def fetch_transaction_report_by_customer_name() -> str:
     """
-    Retrieves transaction counts grouped by normalized Customer Name.
+    Retrieves transaction counts grouped by standardized Customer ID (CID).
     """
-    official_customers = helpers.load_customer_directory()
-    cid_to_name_map = helpers.load_acc_cid_map()
+    # 1. Fetch Raw Data
     query = text("SELECT cust_id, COUNT(*) as c FROM transactions WHERE cust_id IS NOT NULL AND cust_id != '' GROUP BY cust_id")
     
-    grouped_data = defaultdict(lambda: {"count": 0, "id": "N/A"})
+    cid_counts = defaultdict(int)
+    
     with engine.connect() as conn:
         for row in conn.execute(query):
-            raw_cid = str(row.cust_id).strip()
+            raw_cid = str(row.cust_id)
             count = row.c
-            t_cid = re.sub(r'^[A-Z]-', '', raw_cid)
-            acc_name = cid_to_name_map.get(t_cid)
             
-            if not acc_name:
-                key = f"[Unknown ID] {t_cid}"
-                grouped_data[key]["count"] += count
-                grouped_data[key]["id"] = t_cid 
-                continue
+            # 2. Standardize ID (Convert 'B-CID123' -> 'CID123')
+            std_cid = helpers.standardize_customer_id(raw_cid)
             
-            clean_acc_name = helpers.normalize_name(acc_name)
-            target_clean_names = [x['clean'] for x in official_customers]
-            match_clean = helpers.get_fuzzy_match(clean_acc_name, target_clean_names, threshold=0.85)
-            
-            if match_clean:
-                official_entry = next((x for x in official_customers if x['clean'] == match_clean), None)
-                if official_entry:
-                    grouped_data[official_entry['name']]["count"] += count
-                    grouped_data[official_entry['name']]["id"] = official_entry['id']
-            else:
-                display_name = f"[New] {clean_acc_name.title()}" if clean_acc_name else acc_name
-                grouped_data[display_name]["count"] += count
-                grouped_data[display_name]["id"] = t_cid 
+            # 3. Aggregate
+            cid_counts[std_cid] += count
 
-    output_rows = []
-    for name, data in grouped_data.items():
-        output_rows.append({"id": data["id"], "name": name, "count": data["count"]})
+    # 4. Format Output (2 Columns Only)
+    output_rows = [{"id": k, "count": v} for k, v in cid_counts.items()]
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    md = "CUSTOMER TRANSACTION REPORT (Linked & Deduplicated):\n"
-    md += "| Customer ID | Customer Name | Transaction Count |\n"
-    md += "| :--- | :--- | :--- |\n"
+    md = "TRANSACTION REPORT (By Customer ID):\n"
+    md += "| Customer ID | Transaction Count |\n"
+    md += "| :--- | :--- |\n"
     for row in output_rows:
-        md += f"| {row['id']} | {row['name']} | {row['count']} |\n"
+        md += f"| {row['id']} | {row['count']} |\n"
     return md
 
 @mcp.tool()
@@ -414,7 +412,7 @@ def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
 @mcp.tool()
 def fetch_best_performers(start_date: str, end_date: str) -> str:
     """
-    Fetches a leaderboard of best performing salesmen and products for a specific time period.
+    Fetches a leaderboard of best performing salesmen and products within a date range or overall.
     
     Description:
         Identifies the top performers across four categories:
@@ -425,8 +423,8 @@ def fetch_best_performers(start_date: str, end_date: str) -> str:
         Also identifies the single most sold product by quantity.
     
     Parameters:
-        start_date (str): The start of the analysis period (Format: YYYY-MM-DD).
-        end_date (str): The end of the analysis period (Format: YYYY-MM-DD).
+        start_date (str, optional): Start date (YYYY-MM-DD). Defaults to '2015-01-01' if not provided.
+        end_date (str, optional): End date (YYYY-MM-DD). Defaults to today (GMT+7) if not provided.
 
     Returns:
         str: A Markdown formatted leaderboard summary.
@@ -435,4 +433,11 @@ def fetch_best_performers(start_date: str, end_date: str) -> str:
         Use when the user asks "Who is the best salesman?", "Show me the top performers for January",
         or "Who had the highest conversion rate last year?".
     """
-    return helpers.fetch_best_performers_logic(start_date, end_date)
+
+    # --- DEFAULT DATE LOGIC ---
+    # Apply Defaults if arguments are missing or empty strings
+    tz = pytz.timezone('Asia/Jakarta')
+    today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
+    final_start = start_date if start_date and start_date.strip() else '2015-01-01'
+    final_end = end_date if end_date and end_date.strip() else today
+    return helpers.fetch_best_performers_logic(final_start, final_end)

@@ -92,7 +92,12 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
         - **Competitor Issues**: "Pakai produk lain", "Harga kompetitor lebih murah".
         - **Positive Signals**: "Minta invoice", "Order", "Tertarik".
 
-    3. **Conclusion**:
+    3. **Strengths & Weaknesses (Strong and Weak Points)**:
+        - List the salesman's key strengths (skills, behaviors, recurring positive patterns) with concrete examples from visit notes and metrics.
+        - List the salesman's main weaknesses (gaps, recurring negative patterns, process issues) with evidence from notes and data.
+        - For each point, provide a short justification (1-2 sentences) linking to specific notes or numeric indicators.
+
+    4. **Conclusion**:
         - Is this salesman working efficiently?
         - Are they making too many "empty visits" (visits where the doctor isn't there)?
         - Provide 1-2 actionable recommendations based on the notes.
@@ -101,32 +106,47 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
 @mcp.prompt()
 def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
     """
-    Generates a prompt to compare the performance and effectiveness of two salesmen.
+    Generates a prompt to compare the performance and effectiveness of two salesmen,
+    including each salesman's strengths and weaknesses with evidence and short justifications.
     """
     return f"""
-    Act as a Senior Sales Manager. I need a comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
+    Act as a Senior Sales Manager. I need a clear comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
     
     Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}'.
     
-    Once you have the data, perform a side-by-side analysis:
-    
-    ### 1. Quantitative Comparison (The Numbers)
-    - Compare their **Conversion Ratios** (Total Transactions / Total Visits).
-    - Who has the higher volume of activity?
-    
-    ### 2. Qualitative Comparison (The "Why")
-    Analyze the `visitnotes` (Bahasa Indonesia) for both.
-    - **{salesman_a}**: What are their common obstacles? (e.g., "Dokter cuti", "Stok full")? What are their strengths?
-    - **{salesman_b}**: How does their situation differ? Do they meet doctors more often?
-    
-    ### 3. Verdict & Conclusion
-    - Who is the more effective salesman right now?
-    - Is the lower-performing salesman lazy (no visits) or just unlucky (doctors unavailable)?
-    - Give a specific recommendation for each person.
+    After retrieving data, produce the following sections:
+
+    1. QUANTITATIVE COMPARISON
+    - Conversion Ratio (Total Transactions / Total Visits) for each.
+    - Total Visits and Total Transactions for each.
+    - Who has higher activity volume and by how much (absolute and %).
+
+    2. VISIT NOTES ANALYSIS (Bahasa Indonesia)
+    - Summarize the top 3 recurring themes/phrases in visit notes for {salesman_a}.
+    - Summarize the top 3 recurring themes/phrases in visit notes for {salesman_b}.
+
+    3. STRENGTHS & WEAKNESSES (for EACH salesman)
+    For {salesman_a}:
+    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+
+    For {salesman_b}:
+    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+
+    4. SIDE-BY-SIDE SUMMARY TABLE
+    - Provide a concise table or bullet list comparing key metrics and the top 2 strengths & weaknesses side-by-side.
+
+    5. VERDICT & ACTIONABLE RECOMMENDATIONS
+    - Who is more effective right now and why (data + notes)?
+    - Is the lower-performing salesman lazy (low visits) or unlucky (doctor unavailability, stock issues)?
+    - Provide 1 specific, prioritized recommendation for {salesman_a} and 1 for {salesman_b} to improve performance.
+
+    Ensure all claims reference specific metrics or visit note excerpts (in Bahasa Indonesia) as evidence.
     """
 
 @mcp.prompt()
-def generate_best_performers_report(start_date: str, end_date: str) -> str:
+def generate_best_performers_report() -> str:
     """
     Generates a prompt for identifying the best performing salesmen and products.
     
@@ -135,11 +155,16 @@ def generate_best_performers_report(start_date: str, end_date: str) -> str:
     2. Pass these dates into the tool execution arguments.
     """
     return f"""
-    You are an expert Sales Performance Analyst.
-    The user wants to know who the "Best Performers" are for the period: {start_date} to {end_date}.
-
-    Step 1: Confirm the date range (YYYY-MM-DD) provided in the arguments.
-    Step 2: Call the tool `fetch_best_performers` with these exact dates.
-    Step 3: Once you receive the tool output (the leaderboard), present it enthusiastically to the user.
-    Step 4: Add a brief 1-sentence observation summarizing the result (e.g., "It seems [Name] is dominating in revenue, but [Name] is more efficient with visits.").
+    You are an expert Sales Performance Analyst. 
+    The user wants to see the "Best Performers" leaderboard.
+    
+    ### INSTRUCTIONS:
+    1. **Analyze the User's Request** to find a date range (e.g., "last month", "October 2025", "2023").
+    2. **Determine the Dates** (YYYY-MM-DD):
+        - If a specific range is mentioned, calculate the start and end dates.
+        - If NO date is mentioned (e.g., "Show me best performers"), use the **All Time** defaults:
+            - Start: '2015-01-01'
+            - End: [Current Date in YYYY-MM-DD]
+    3. **Call the Tool**: `fetch_best_performers(start_date=..., end_date=...)`.
+    4. **Present the Result**: detailed and enthusiastic.
     """

@@ -83,6 +83,43 @@ def resolve_salesman_identity(raw_text, code_map, digit_map, name_list):
                 return u['id']
     return None
 
+def standardize_customer_id(text: str) -> str:
+    """
+    Standardizes Customer ID to 'CIDxxxxx' format.
+    Removes 'B-' prefixes and ensures numeric part is prefixed with CID.
+    """
+    if not text or str(text).lower() in ['none', 'nan', '']:
+        return "N/A"
+    
+    clean = str(text).upper().strip()
+    
+    # Specific fix for "B-CID..." format mentioned
+    clean = re.sub(r'^B[-_]*', '', clean)
+    
+    # Extract digits. If digits exist, format as CID{digits}
+    # This preserves leading zeros (e.g. 00196) if they exist in the text
+    digits = re.search(r'\d+', clean)
+    if digits:
+        return f"CID{digits.group()}"
+    
+    return clean
+
+def load_name_to_cid_map():
+    """
+    Loads a mapping of Normalized Name -> CID from acc_customers.
+    Used to bridge the gap between Plans (linked to internal ID) and CID.
+    """
+    name_to_cid = {}
+    query = text("SELECT cid, cust_name FROM acc_customers")
+    with engine.connect() as conn:
+        for row in conn.execute(query):
+            if row.cid and row.cust_name:
+                clean_name = normalize_name(row.cust_name)
+                if clean_name:
+                    std_cid = standardize_customer_id(row.cid)
+                    name_to_cid[clean_name] = std_cid
+    return name_to_cid
+
 # --- DATABASE LOADERS ---
 
 def load_official_users_map():
@@ -246,95 +283,136 @@ def fetch_single_salesman_data(salesman_name: str) -> str:
 
 def fetch_best_performers_logic(start_date: str, end_date: str) -> str:
     """
-    Executes multiple queries to determine the best performers in various categories
-    within a date range.
+    Determines best performers with rigorous Identity Resolution for Salesmen
+    and Fuzzy Matching for Products.
     """
-    stats = {} # {salesman_name: {'visits': 0, 'trans_count': 0, 'revenue': 0}}
-    top_product = "N/A"
-    
+    from sqlalchemy import text
+    from collections import defaultdict
+    import re
+
+    # --- 1. PRE-LOAD REFERENCE MAPS ---
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    prod_id_map, official_products = load_product_directory()
+    official_products.sort(key=lambda x: len(x['clean']), reverse=True)
+    target_product_cleans = [x['clean'] for x in official_products]
+
+    # Stats Container
+    stats = defaultdict(lambda: {"name": "Unknown", "visits": 0, "trans": 0, "rev": 0})
+    product_stats = defaultdict(int)
+
     with engine.connect() as conn:
-        # 1. Fetch Visit Counts (linked via plans -> users)
+        # --- 2. PROCESS VISITS ---
         visit_query = text("""
-            SELECT u.name, COUNT(r.id) as visit_count
+            SELECT p.userid, u.name, COUNT(r.id) as visit_count
             FROM reports r
             JOIN plans p ON r.idplan = p.id
             JOIN users u ON p.userid = u.id
-            WHERE p.date BETWEEN :start AND :end
-            GROUP BY u.name
+            WHERE r.date BETWEEN :start AND :end
+            GROUP BY p.userid, u.name
         """)
         
         result_visits = conn.execute(visit_query, {"start": start_date, "end": end_date})
         for row in result_visits:
-            name = row.name
-            if name not in stats:
-                stats[name] = {'visits': 0, 'trans_count': 0, 'revenue': 0}
-            stats[name]['visits'] = row.visit_count
+            u_id = str(row.userid)
+            stats[u_id]["visits"] = row.visit_count
+            stats[u_id]["name"] = row.name 
 
-        # 2. Fetch Transaction Counts & Revenue
+        # --- 3. PROCESS TRANSACTIONS ---
         trans_query = text("""
-            SELECT salesman_name, COUNT(*) as t_count, SUM(amount * qty) as revenue
+            SELECT salesman_name, product, qty, amount 
             FROM transactions
             WHERE inv_date BETWEEN :start AND :end
-            GROUP BY salesman_name
         """)
         
         result_trans = conn.execute(trans_query, {"start": start_date, "end": end_date})
+        
         for row in result_trans:
-            name = row.salesman_name
-            if name: # Ensure name is not None
-                if name not in stats:
-                    stats[name] = {'visits': 0, 'trans_count': 0, 'revenue': 0}
-                stats[name]['trans_count'] = row.t_count
-                stats[name]['revenue'] = row.revenue
+            raw_salesman = str(row.salesman_name) if row.salesman_name else ""
+            raw_product = str(row.product) if row.product else ""
+            qty = int(row.qty) if row.qty else 0
+            revenue = int(row.amount) * qty if row.amount else 0
 
-        # 3. Fetch Most Sold Product
-        prod_query = text("""
-            SELECT prodname, SUM(qty) as total_qty
-            FROM transactions
-            WHERE inv_date BETWEEN :start AND :end
-            GROUP BY product
-            ORDER BY total_qty DESC
-            LIMIT 1
-        """)
-        result_prod = conn.execute(prod_query, {"start": start_date, "end": end_date}).fetchone()
-        if result_prod:
-            top_product = f"{result_prod.prodname} ({result_prod.total_qty} units)"
+            # --- A. RESOLVE SALESMAN ---
+            resolved_id = resolve_salesman_identity(raw_salesman, code_map, digit_map, name_list)
+            
+            target_key = None
+            if resolved_id:
+                target_key = resolved_id
+                if stats[target_key]["name"] == "Unknown":
+                    stats[target_key]["name"] = id_map[resolved_id]['name']
+            else:
+                clean_n = clean_salesman_name(raw_salesman).title()
+                if clean_n:
+                    target_key = clean_n
+                    if stats[target_key]["name"] == "Unknown":
+                        stats[target_key]["name"] = clean_n
 
-    # --- Determine Winners ---
+            if target_key:
+                stats[target_key]["trans"] += 1 
+                stats[target_key]["rev"] += revenue
+
+            # --- B. RESOLVE PRODUCT ---
+            clean_prod = normalize_product_name(raw_product)
+            match_found = False
+            
+            if clean_prod:
+                for official in official_products:
+                    if f" {official['clean']} " in f" {clean_prod} ":
+                        product_stats[official['name']] += qty
+                        match_found = True
+                        break
+                
+                if not match_found:
+                    fuzzy_match = get_fuzzy_match(clean_prod, target_product_cleans, threshold=0.75)
+                    if fuzzy_match:
+                        official_entry = next((x for x in official_products if x['clean'] == fuzzy_match), None)
+                        if official_entry:
+                            product_stats[official_entry['name']] += qty
+                            match_found = True
+
+            if not match_found and clean_prod:
+                product_stats[clean_prod.title()] += qty
+
+    # --- 4. CALCULATE WINNERS ---
     if not stats:
         return f"No performance data found between {start_date} and {end_date}."
 
-    winner_visits = max(stats.items(), key=lambda x: x[1]['visits'])
-    winner_trans_count = max(stats.items(), key=lambda x: x[1]['trans_count'])
-    winner_revenue = max(stats.items(), key=lambda x: x[1]['revenue'])
+    stats_list = list(stats.values())
+
+    # Safely get max values
+    winner_visits = max(stats_list, key=lambda x: x['visits']) if stats_list else None
+    winner_trans = max(stats_list, key=lambda x: x['trans']) if stats_list else None
+    winner_revenue = max(stats_list, key=lambda x: x['rev']) if stats_list else None
     
-    # Calculate Conversion Ratio (Transactions / Visits)
-    # Filter out those with 0 visits to avoid ZeroDivisionError
-    valid_ratios = {
-        k: (v['trans_count'] / v['visits']) * 100 
-        for k, v in stats.items() 
-        if v['visits'] > 0
-    }
-    
-    if valid_ratios:
-        winner_conversion = max(valid_ratios.items(), key=lambda x: x[1])
-        conv_str = f"**{winner_conversion[0]}** with {winner_conversion[1]:.2f}%"
+    # Calculate Conversion
+    eligible_conv = [s for s in stats_list if s['visits'] > 0]
+    if eligible_conv:
+        winner_conv = max(eligible_conv, key=lambda x: x['trans'] / x['visits'])
+        ratio = (winner_conv['trans'] / winner_conv['visits']) * 100
+        conv_str = f"**{winner_conv['name']}** ({ratio:.2f}%)"
     else:
-        conv_str = "No valid visits recorded to calculate conversion."
+        conv_str = "N/A"
 
-    # --- Format Output ---
-    report = f"""
-### 🏆 Best Performers Report
-**Period:** {start_date} to {end_date}
+    # Best Product
+    if product_stats:
+        best_prod_name = max(product_stats, key=product_stats.get)
+        best_prod_qty = product_stats[best_prod_name]
+        top_product_str = f"{best_prod_name} ({best_prod_qty} units)"
+    else:
+        top_product_str = "No products sold"
 
-| Category | Winner | Stat |
+    # --- 5. FORMAT OUTPUT ---
+    md = f"""
+### 🏆 Best Performers ({start_date} to {end_date})
+
+| Award Category | Winner | Statistic |
 | :--- | :--- | :--- |
-| **Highest Visit Count** | **{winner_visits[0]}** | {winner_visits[1]['visits']} visits |
-| **Highest Transaction Count** | **{winner_trans_count[0]}** | {winner_trans_count[1]['trans_count']} transactions |
-| **Highest Revenue** | **{winner_revenue[0]}** | ${winner_revenue[1]['revenue']:,.2f} |
-| **Best Conversion Ratio** | {conv_str} | (Trans / Visits) |
+| **Most Completed Visits** | **{winner_visits['name'] if winner_visits else '-'}** | {winner_visits['visits'] if winner_visits else 0} Visits |
+| **Most Transactions** | **{winner_trans['name'] if winner_trans else '-'}** | {winner_trans['trans'] if winner_trans else 0} Deals |
+| **Highest Revenue** | **{winner_revenue['name'] if winner_revenue else '-'}** | Rp {winner_revenue['rev']:,.0f} |
+| **Best Conversion Rate** | {winner_conv['name'] if eligible_conv else '-'} | {conv_str} (Visits / Deals) |
 
 #### 📦 Most Popular Product
-**{top_product}**
+**{top_product_str}**
 """
-    return report
+    return md
