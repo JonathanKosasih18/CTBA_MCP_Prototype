@@ -8,24 +8,25 @@ Lightweight MCP server exposing analytic tools over the CTBA dataset.
 - Example client:
   - [client.py](client.py) — shows SSE connection and LLM-driven agent loop.
 
-## Features / Tools
-Each tool is registered in [tools.py](tools.py) and most have companion prompts in [prompts.py](prompts.py).
+## Implemented features
+The server now includes the following implemented analytics tools (deduped/cleaned using normalization helpers in [helpers.py](helpers.py)):
 
-- Planned visits (deduplicated / cleaned)
-  - By customer: [`tools.fetch_deduplicated_visit_report`](tools.py) — prompt: [`prompts.generate_planned_visits_report_by_customer`](prompts.py)
-  - By salesman: [`tools.fetch_visit_plans_by_salesman`](tools.py) — prompt: [`prompts.generate_planned_visits_report_by_salesman`](prompts.py)
-  - By clinic: [`tools.fetch_visit_plans_by_clinic`](tools.py) — prompt: [`prompts.generate_planned_visits_report_by_clinic`](prompts.py)
+- Planned visits (grouped & deduplicated)
+  - By customer (group by custcode from customers): [`tools.fetch_deduplicated_visit_report`](tools.py)
+  - By salesman (group by username from users): [`tools.fetch_visit_plans_by_salesman`](tools.py)
+  - By clinic (group by clinicname from clinics): [`tools.fetch_visit_plans_by_clinic`](tools.py)
 
-- Transactions (deduplicated / cleaned)
-  - By customer (acc_customers cid): [`tools.fetch_transaction_report_by_customer_name`](tools.py) — prompt: [`prompts.generate_transaction_report_by_customer`](prompts.py)
-  - By salesman: [`tools.fetch_deduplicated_sales_report`](tools.py) — prompt: [`prompts.generate_transaction_report_by_salesmen`](prompts.py)
-  - By product name: [`tools.fetch_transaction_report_by_product`](tools.py) — prompt: [`prompts.generate_transaction_report_by_product`](prompts.py)
+- Transactions (grouped & deduplicated)
+  - By customer (group by cid from acc_customers): [`tools.fetch_transaction_report_by_customer_name`](tools.py)
+  - By salesman (group by username from users): [`tools.fetch_deduplicated_sales_report`](tools.py)
+  - By product name (group by prodname from products): [`tools.fetch_transaction_report_by_product`](tools.py)
 
 - Reports & performance
-  - Completed visit report counts by salesman: [`tools.fetch_report_counts_by_salesman`](tools.py) — prompt: [`prompts.generate_report_counts_by_salesman`](prompts.py)
-  - Salesman performance scorecard (Plans vs Visits vs Transactions): [`tools.fetch_comprehensive_salesman_performance`](tools.py) — prompt: [`prompts.generate_comprehensive_salesman_report`](prompts.py)
-  - Analyze a single salesman's visit effectiveness (visit reports vs transactions): [`tools.fetch_salesman_visit_history`](tools.py) — prompt: [`prompts.analyze_salesman_visit_effectiveness`](prompts.py)
-  - Compare two salesmen's visit effectiveness (side‑by‑side): [`tools.fetch_salesman_comparison_data`](tools.py) — prompt: [`prompts.compare_salesmen_effectiveness`](prompts.py)
+  - Completed visit report counts by salesman: [`tools.fetch_report_counts_by_salesman`](tools.py)
+  - Salesman performance (Plans vs Visits vs Transactions): [`tools.fetch_comprehensive_salesman_performance`](tools.py)
+  - Analyze visit effectiveness for a single salesman (visit reports vs transactions): [`tools.fetch_salesman_visit_history`](tools.py)
+  - Compare two salesmen (side‑by‑side visit reports vs transactions): [`tools.fetch_salesman_comparison_data`](tools.py)
+  - Time‑range leaderboard (highest visit count, transaction count, and visit→transaction ratio): [`tools.fetch_best_performers`](tools.py) — accepts start_date and end_date
 
 ## Core components
 - Tool implementations & registration: [tools.py](tools.py)
@@ -35,6 +36,11 @@ Each tool is registered in [tools.py](tools.py) and most have companion prompts 
 - Example client & LLM integration: [client.py](client.py)
 - DB engine config: [database.py](database.py)
 - Normalization & identity helpers: [helpers.py](helpers.py) — key helpers: [`helpers.normalize_name`](helpers.py), [`helpers.resolve_salesman_identity`](helpers.py), [`helpers.load_official_users_map`](helpers.py), [`helpers.fetch_single_salesman_data`](helpers.py)
+
+## API / FastAPI integration
+A minimal FastAPI integration is included with a sample root endpoint defined in [server.py](server.py) (returns a health message). The MCP SSE app is mounted at /mcp via the server entrypoint.
+
+The FastAPI integration is still currently under development
 
 ## Output format
 - Tools return human-readable Markdown tables or plain text summary logs suitable for LLM consumption and display in the example client.
