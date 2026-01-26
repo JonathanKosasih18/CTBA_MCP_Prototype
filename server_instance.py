@@ -1,4 +1,9 @@
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-# Initialize the MCP Server Instance
-mcp = FastMCP("CTBA MCP")
+mcp = FastMCP(
+    "CTBA MCP",
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=["*"] 
+    )
+)
