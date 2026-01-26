@@ -23,3 +23,5 @@ customers.csv
 /scripts
 /client
 /hidden
+/conversations
+mcp_client.log
