@@ -7,9 +7,8 @@ import contextlib
 # Import the server instance
 from server_instance import mcp
 
-# Import tools and prompts to register them with the server
+# Import tools to register them with the server
 import tools
-import prompts
 
 # Lifecycle Manager (Optional but good practice)
 @contextlib.asynccontextmanager

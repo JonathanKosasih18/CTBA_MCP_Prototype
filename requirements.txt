@@ -1,6 +1,8 @@
+fastapi
+uvicorn[standard]
 mcp
-uvicorn
 python-dotenv
 sqlalchemy
 pymysql
 cryptography
+pytz
