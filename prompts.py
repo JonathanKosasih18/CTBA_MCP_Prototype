@@ -5,8 +5,10 @@ def generate_planned_visits_report_by_customer() -> str:
     """Generates a prompt to request the planned visits report grouped by customer."""
     return """
     I need a Planned Visits Report grouped by Customer.
-    Please run the tool `fetch_deduplicated_visit_report` with the argument `output_format=1`.
-    Output the result exactly as the tool returns it (Markdown Table).
+    Please run the tool `fetch_deduplicated_visit_report`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Customer ID | Visit Count |
     """
 
 @mcp.prompt()
@@ -14,8 +16,10 @@ def generate_planned_visits_report_by_salesman() -> str:
     """Generates a prompt to request the planned visits report grouped by salesman."""
     return """
     I need a Planned Visits Report grouped by Salesman.
-    Please run the tool `fetch_visit_plans_by_salesman` with the argument `output_format=1`.
-    Output the table exactly as returned by the tool.
+    Please run the tool `fetch_visit_plans_by_salesman`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Sales User ID | Sales Name | Visit Count |
     """
 
 @mcp.prompt()
@@ -23,8 +27,9 @@ def generate_planned_visits_report_by_clinic() -> str:
     """Generates a prompt to request the planned visits report grouped by clinic."""
     return """
     I need a Planned Visits Report grouped by Clinic.
-    Please run the tool `fetch_visit_plans_by_clinic` with the argument `output_format=1`.
-    The output will be a table with columns: 
+    Please run the tool `fetch_visit_plans_by_clinic`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns: 
     | Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |
     """
 
@@ -33,8 +38,10 @@ def generate_transaction_report_by_salesmen() -> str:
     """Generates a prompt to request the consolidated sales report."""
     return """
     I need the Sales Performance Report.
-    Please run the tool `fetch_deduplicated_sales_report` with the argument `output_format=1`.
-    Display the returned table exactly as is.
+    Please run the tool `fetch_deduplicated_sales_report`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Sales User ID | Sales Name | Transaction Count |
     """
 
 @mcp.prompt()
@@ -42,7 +49,10 @@ def generate_transaction_report_by_customer() -> str:
     """Generates a prompt to request the customer transaction report."""
     return """
     I need the Transaction Report grouped by Customer Name.
-    Please run the tool `fetch_transaction_report_by_customer_name` with the argument `output_format=1`.
+    Please run the tool `fetch_transaction_report_by_customer_name`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Customer ID | Transaction Count |
     """
 
 @mcp.prompt()
@@ -50,7 +60,11 @@ def generate_transaction_report_by_product() -> str:
     """Generates a prompt to request the product sales report."""
     return """
     I need the Transaction Report grouped by Product.
-    Please run the tool `fetch_transaction_report_by_product` with the argument `output_format=1`.
+    Please run the tool `fetch_transaction_report_by_product`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Product Name | Units Sold (Qty) | Total Revenue |
+    (Format the Revenue column with thousands separators, e.g., 1,000,000)
     """
 
 @mcp.prompt()
@@ -58,8 +72,10 @@ def generate_report_counts_by_salesman() -> str:
     """Generates a prompt to request the count of completed visit reports grouped by salesman."""
     return """
     I need a Report on Completed Visits (Reports) grouped by Salesman.
-    Please run the tool `fetch_report_counts_by_salesman` with the argument `output_format=1`.
-    Output the table exactly as returned by the tool.
+    Please run the tool `fetch_report_counts_by_salesman`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Sales User ID | Salesman Name | Total Reports |
     """
 
 @mcp.prompt()
@@ -67,8 +83,11 @@ def generate_comprehensive_salesman_report() -> str:
     """Generates a prompt for the all-in-one Salesman Performance Scorecard."""
     return """
     I need the Comprehensive Salesman Performance Report (Scorecard).
-    Please run the tool `fetch_comprehensive_salesman_performance` with the argument `output_format=1`.
-    Display the result exactly as returned.
+    Please run the tool `fetch_comprehensive_salesman_performance`.
+    
+    The tool returns JSON data. Please format this data into a clean Markdown table with the following columns:
+    | Sales User ID | Salesman Name | Total Plans | Total Visits | Total Transactions | Plan to Visit Ratio | Visit to Transaction Ratio |
+    (Format ratios to 2 decimal places)
     """
 
 @mcp.prompt()
@@ -79,22 +98,22 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
     return f"""
     Act as a Sales Performance Analyst. I need you to evaluate the effectiveness of salesman: {salesman_name}.
     
-    Please run the tool `fetch_salesman_visit_history` with the arguments '{salesman_name}' and `output_format=1`.
+    Please run the tool `fetch_salesman_visit_history` with the argument '{salesman_name}'.
     
-    Once you have the data, perform the following analysis:
+    The tool returns JSON data containing statistics and a list of visit notes. Use this JSON data to perform the following analysis:
     
     1. **Calculate the Conversion Ratio**: (Total Transactions / Total Visits).
     
     2. **Analyze the Visit Notes (Bahasa Indonesia)**:
-        Read the visit notes and categorize them to explain the ratio. Look for patterns such as:
+        Read the visit notes provided in the JSON and categorize them to explain the ratio. Look for patterns such as:
         - **Availability Issues**: "Dokter tidak ada", "Tutup", "Cuti", "Seminar".
         - **Stock Issues**: "Stok masih ada", "Barang numpuk", "Belum perlu".
         - **Competitor Issues**: "Pakai produk lain", "Harga kompetitor lebih murah".
         - **Positive Signals**: "Minta invoice", "Order", "Tertarik".
 
     3. **Strengths & Weaknesses (Strong and Weak Points)**:
-        - List the salesman's key strengths (skills, behaviors, recurring positive patterns) with concrete examples from visit notes and metrics.
-        - List the salesman's main weaknesses (gaps, recurring negative patterns, process issues) with evidence from notes and data.
+        - List the salesman's key strengths (skills, behaviors, recurring positive patterns) with concrete examples from the JSON notes and metrics.
+        - List the salesman's main weaknesses (gaps, recurring negative patterns, process issues) with evidence from the JSON notes and data.
         - For each point, provide a short justification (1-2 sentences) linking to specific notes or numeric indicators.
 
     4. **Conclusion**:
@@ -112,9 +131,9 @@ def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
     return f"""
     Act as a Senior Sales Manager. I need a clear comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
     
-    Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}' and `output_format=1`.
+    Please run the tool `fetch_salesman_comparison_data` with arguments '{salesman_a}' and '{salesman_b}'.
     
-    After retrieving data, produce the following sections:
+    The tool returns JSON data containing stats and notes for both salesmen. Use this JSON data to produce the following sections:
 
     1. QUANTITATIVE COMPARISON
     - Conversion Ratio (Total Transactions / Total Visits) for each.
@@ -127,15 +146,15 @@ def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
 
     3. STRENGTHS & WEAKNESSES (for EACH salesman)
     For {salesman_a}:
-    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
-    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence from the JSON.
+    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence from the JSON.
 
     For {salesman_b}:
-    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
-    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence.
+    - Strengths: List 3 (or up to 3) strengths. For each, give a 1-2 sentence justification citing specific notes or numeric evidence from the JSON.
+    - Weaknesses: List 3 (or up to 3) weaknesses. For each, give a 1-2 sentence justification citing specific notes or numeric evidence from the JSON.
 
     4. SIDE-BY-SIDE SUMMARY TABLE
-    - Provide a concise table or bullet list comparing key metrics and the top 2 strengths & weaknesses side-by-side.
+    - Provide a concise Markdown table comparing key metrics and the top 2 strengths & weaknesses side-by-side.
 
     5. VERDICT & ACTIONABLE RECOMMENDATIONS
     - Who is more effective right now and why (data + notes)?
@@ -149,10 +168,6 @@ def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
 def generate_best_performers_report() -> str:
     """
     Generates a prompt for identifying the best performing salesmen and products.
-    
-    The LLM should:
-    1. Parse the user's natural language date request (e.g., "last month", "Q1 2025") into YYYY-MM-DD.
-    2. Pass these dates into the tool execution arguments.
     """
     return f"""
     You are an expert Sales Performance Analyst. 
@@ -166,5 +181,7 @@ def generate_best_performers_report() -> str:
             - Start: '2015-01-01'
             - End: [Current Date in YYYY-MM-DD]
     3. **Call the Tool**: `fetch_best_performers(start_date=..., end_date=...)`.
-    4. **Present the Result**: detailed and enthusiastic.
+    4. **Present the Result**: The tool will return JSON data. Please format this JSON into a beautiful Markdown report with:
+        - A "🏆 Best Performers" table.
+        - A "📦 Most Popular Product" section.
     """

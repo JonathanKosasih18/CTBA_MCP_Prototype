@@ -7,16 +7,15 @@ import contextlib
 # Import the server instance
 from server_instance import mcp
 
-# Import tools to register them with the server
+# This registers the tools with the 'mcp' object
 import tools
+import prompts
 
-# Lifecycle Manager (Optional but good practice)
+# Lifecycle Manager
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic here if needed
     print("--- CTBA Analytics Server Starting ---")
     yield
-    # Shutdown logic here
     print("--- Server Shutting Down ---")
 
 # Initialize FastAPI app
@@ -82,6 +81,40 @@ def get_best_performers(
 ):
     # Default is output_format=0, so this returns pure JSON
     return tools.fetch_best_performers(start_date, end_date)
+
+@app.get("/tools")
+async def list_tools():
+    """
+    Simple endpoint to list all registered tools with their input schemas.
+    """
+    tools_data = []
+    
+    source = None
+    if hasattr(mcp, '_tool_manager') and hasattr(mcp._tool_manager, '_tools'):
+        source = mcp._tool_manager._tools
+    elif hasattr(mcp, '_tools'):
+        source = mcp._tools
+        
+    if source:
+        for name, tool in source.items():
+            schema = "Unknown Schema"
+            
+            if hasattr(tool, "parameters"):
+                if hasattr(tool.parameters, "model_json_schema"):
+                    schema = tool.parameters.model_json_schema()
+                else:
+                    schema = tool.parameters
+            
+            tools_data.append({
+                "name": getattr(tool, "name", name),
+                "description": getattr(tool, "description", ""),
+                "input_schema": schema
+            })
+            
+    return {
+        "count": len(tools_data),
+        "tools": tools_data
+    }
 
 # Run the MCP server
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import re
 import datetime
 import pytz
-from typing import Optional, Union, List, Dict
+import json
 from collections import defaultdict
 from sqlalchemy import text
 from server_instance import mcp
@@ -11,10 +11,10 @@ import helpers
 # --- MCP TOOLS ---
 
 @mcp.tool()
-def fetch_deduplicated_visit_report(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_deduplicated_visit_report() -> str:
     """
     Retrieves a consolidated report of 'Planned Visits' grouped by standardized Customer ID (CID).
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing visit counts per customer.
     """
     # 1. Get Visit Counts
     visit_counts = defaultdict(int)
@@ -59,22 +59,13 @@ def fetch_deduplicated_visit_report(output_format: int = 0) -> Union[str, List[D
     final_rows.sort(key=lambda x: x['count'], reverse=True)
 
     # --- RETURN JSON ---
-    if output_format == 0:
-        return final_rows
-
-    # --- RETURN MARKDOWN ---
-    md = "PLANNED VISITS REPORT (By Customer ID):\n"
-    md += "| Customer ID | Visit Count |\n"
-    md += "| :--- | :--- |\n"
-    for row in final_rows:
-        md += f"| {row['id']} | {row['count']} |\n"
-    return md
+    return json.dumps(final_rows)
 
 @mcp.tool()
-def fetch_deduplicated_sales_report(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_deduplicated_sales_report() -> str:
     """
     Retrieves a consolidated Sales Performance Report grouped by Salesman.
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing sales transaction counts per salesman.
     """
     id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
     query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
@@ -107,22 +98,13 @@ def fetch_deduplicated_sales_report(output_format: int = 0) -> Union[str, List[D
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
     # --- RETURN JSON ---
-    if output_format == 0:
-        return output_rows
-
-    # --- RETURN MARKDOWN ---
-    md = "CONSOLIDATED SALES REPORT (Auto-Deduplicated):\n"
-    md += "| Sales User ID | Sales Name | Transaction Count |\n"
-    md += "| :--- | :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_transaction_report_by_customer_name(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_transaction_report_by_customer_name() -> str:
     """
     Retrieves transaction counts grouped by standardized Customer ID (CID).
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing transaction counts per customer ID.
     """
     # 1. Fetch Raw Data
     query = text("SELECT cust_id, COUNT(*) as c FROM transactions WHERE cust_id IS NOT NULL AND cust_id != '' GROUP BY cust_id")
@@ -138,21 +120,13 @@ def fetch_transaction_report_by_customer_name(output_format: int = 0) -> Union[s
     output_rows = [{"id": k, "count": v} for k, v in cid_counts.items()]
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    if output_format == 0:
-        return output_rows
-
-    md = "TRANSACTION REPORT (By Customer ID):\n"
-    md += "| Customer ID | Transaction Count |\n"
-    md += "| :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['id']} | {row['count']} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_visit_plans_by_salesman(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_visit_plans_by_salesman() -> str:
     """
     Retrieves the count of 'Planned Visits' grouped by Salesman.
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing planned visit counts per salesman.
     """
     id_map, _, _, _ = helpers.load_official_users_map()
     query = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
@@ -168,21 +142,13 @@ def fetch_visit_plans_by_salesman(output_format: int = 0) -> Union[str, List[Dic
     
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    if output_format == 0:
-        return output_rows
-
-    md = "PLANNED VISITS REPORT (Grouped by Salesman):\n"
-    md += "| Sales User ID | Sales Name | Visit Count |\n"
-    md += "| :--- | :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_transaction_report_by_product(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_transaction_report_by_product() -> str:
     """
     Retrieves sales performance grouped by Product (Units Sold & Revenue).
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing sales volume and revenue per product.
     """
     id_to_name, official_products = helpers.load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
@@ -234,24 +200,17 @@ def fetch_transaction_report_by_product(output_format: int = 0) -> Union[str, Li
 
     output_rows = []
     for name, data in grouped_data.items():
-        output_rows.append({"name": name, "count": data["count"], "revenue": data["revenue"]})
-    output_rows.sort(key=lambda x: x['revenue'], reverse=True)
+        # Convert revenue decimal to str for JSON safety
+        output_rows.append({"name": name, "count": data["count"], "revenue": str(data["revenue"])}) 
+    output_rows.sort(key=lambda x: int(float(x['revenue'])), reverse=True)
     
-    if output_format == 0:
-        return output_rows
-
-    md = "PRODUCT SALES REPORT (Consolidated):\n"
-    md += "| Product Name | Units Sold (Qty) | Total Revenue |\n"
-    md += "| :--- | :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['name']} | {row['count']} | {row['revenue']:,} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_visit_plans_by_clinic(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_visit_plans_by_clinic() -> str:
     """
     Retrieves 'Planned Visits' grouped by Clinic, distinguishing branches by City.
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing visit counts grouped by clinic and city.
     """
     city_buckets = helpers.load_clinic_directory()
     query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
@@ -285,21 +244,13 @@ def fetch_visit_plans_by_clinic(output_format: int = 0) -> Union[str, List[Dict]
 
     final_output.sort(key=lambda x: x['count'], reverse=True)
     
-    if output_format == 0:
-        return final_output
-
-    md = "PLANNED VISITS REPORT (Grouped by Clinic):\n"
-    md += "| Clinic ID(s) | Clinic Name | Clinic Address | Number of Visits |\n"
-    md += "| :--- | :--- | :--- | :--- |\n"
-    for row in final_output:
-        md += f"| {row['ids']} | {row['name']} | {row['city']} | {row['count']} |\n"
-    return md
+    return json.dumps(final_output)
 
 @mcp.tool()
-def fetch_report_counts_by_salesman(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_report_counts_by_salesman() -> str:
     """
     Retrieves the count of *Completed* Visits (Reports) grouped by Salesman.
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data representing completed report counts per salesman.
     """
     id_map, _, _, _ = helpers.load_official_users_map()
     query = text("SELECT p.userid, COUNT(r.id) as c FROM reports r JOIN plans p ON r.idplan = p.id GROUP BY p.userid")
@@ -314,21 +265,13 @@ def fetch_report_counts_by_salesman(output_format: int = 0) -> Union[str, List[D
                 output_rows.append({"user_id": f"ID {u_id}", "name": "[Unknown User]", "count": row.c})
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    if output_format == 0:
-        return output_rows
-
-    md = "COMPLETED REPORTS BY SALESMAN:\n"
-    md += "| Sales User ID | Salesman Name | Total Reports |\n"
-    md += "| :--- | :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['user_id']} | {row['name']} | {row['count']} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_comprehensive_salesman_performance(output_format: int = 0) -> Union[str, List[Dict]]:
+def fetch_comprehensive_salesman_performance() -> str:
     """
     Retrieves a 360-degree 'Scorecard' for Salesmen (Plans vs Visits vs Sales).
-    output_format: 1 = Markdown, 0 = JSON (Default)
+    Returns JSON data comparing plans, reports, and transactions for each salesman.
     """
     id_map, code_map, digit_map, name_list = helpers.load_official_users_map()
     master_data = defaultdict(lambda: {'plans': 0, 'reports': 0, 'transactions': 0})
@@ -368,18 +311,10 @@ def fetch_comprehensive_salesman_performance(output_format: int = 0) -> Union[st
 
     output_rows.sort(key=lambda x: x['transactions'], reverse=True)
     
-    if output_format == 0:
-        return output_rows
-
-    md = "SALESMAN PERFORMANCE SCORECARD (360 View):\n"
-    md += "| Sales User ID | Salesman Name | Total Plans | Total Visits | Total Transactions | Plan to Visit Ratio | Visit to Transaction Ratio |\n"
-    md += "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
-    for row in output_rows:
-        md += f"| {row['code']} | {row['name']} | {row['plans']} | {row['reports']} | {row['transactions']} | {row['ratio_pv']:.2f} | {row['ratio_vt']:.2f} |\n"
-    return md
+    return json.dumps(output_rows)
 
 @mcp.tool()
-def fetch_salesman_visit_history(salesman_name: str, output_format: int = 0) -> Union[str, Dict]:
+def fetch_salesman_visit_history(salesman_name: str) -> str:
     """
     Fetches detailed visit notes and transaction stats for a SPECIFIC salesman.
 
@@ -393,17 +328,18 @@ def fetch_salesman_visit_history(salesman_name: str, output_format: int = 0) -> 
         salesman_name (str): The name or code of the salesman (e.g., "Wilson", "PS100").
 
     Returns:
-        Union[str, Dict]: A text log containing stats and a list of visit notes in Markdown or JSON format.
-        output_format: 1 = Markdown, 0 = JSON (Default)
+        str: JSON string containing stats and a list of visit notes.
 
     When to use:
         Use when the user asks "Why are [Name]'s sales low?", "Analyze [Name]'s visits", 
         or "Check the effectiveness of [Name]".
     """
-    return helpers.fetch_single_salesman_data(salesman_name, output_format)
+    # Force output_format=0 to get dictionary from helper, then dump to JSON string
+    result = helpers.fetch_single_salesman_data(salesman_name, output_format=0)
+    return json.dumps(result)
 
 @mcp.tool()
-def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str, output_format: int = 0) -> Union[str, Dict]:
+def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
     """
     Fetches side-by-side visit notes and transaction stats for TWO salesmen.
 
@@ -418,23 +354,20 @@ def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str, output_form
         salesman_b (str): Name/Code of the second salesman.
 
     Returns:
-        Union[str, Dict]: A combined text log with two distinct sections (one for each salesman) in Markdown or JSON format.
-        output_format: 1 = Markdown, 0 = JSON (Default)
+        str: JSON string containing comparative data for both salesmen.
 
     When to use:
         Use when the user asks to "compare Wilson and Gladys", "who is better between A and B",
         or "compare visit effectiveness of A vs B".
     """
-    report_a = helpers.fetch_single_salesman_data(salesman_a, output_format)
-    report_b = helpers.fetch_single_salesman_data(salesman_b, output_format)
+    report_a = helpers.fetch_single_salesman_data(salesman_a, output_format=0)
+    report_b = helpers.fetch_single_salesman_data(salesman_b, output_format=0)
     
-    if output_format == 0:
-        return {"salesman_a": report_a, "salesman_b": report_b}
-    
-    return f"COMPARISON DATASET:\n\n{report_a}\n\n{report_b}"
+    result = {"salesman_a": report_a, "salesman_b": report_b}
+    return json.dumps(result)
 
 @mcp.tool()
-def fetch_best_performers(start_date: str = None, end_date: str = None, output_format: int = 0) -> Union[str, Dict]:
+def fetch_best_performers(start_date: str = None, end_date: str = None) -> str:
     """
     Fetches a leaderboard of best performing salesmen and products within a date range or overall.
     
@@ -451,14 +384,12 @@ def fetch_best_performers(start_date: str = None, end_date: str = None, output_f
         end_date (str, optional): End date (YYYY-MM-DD). Defaults to today (GMT+7) if not provided.
 
     Returns:
-        Union[str, Dict]: A Markdown formatted leaderboard summary or JSON object.
-        output_format: 1 = Markdown, 0 = JSON (Default)
+        str: JSON string representing the leaderboard.
 
     When to use:
         Use when the user asks "Who is the best salesman?", "Show me the top performers for January",
         or "Who had the highest conversion rate last year?".
     """
-
     # --- DEFAULT DATE LOGIC ---
     # Apply Defaults if arguments are missing or empty strings
     tz = pytz.timezone('Asia/Jakarta')
@@ -466,4 +397,6 @@ def fetch_best_performers(start_date: str = None, end_date: str = None, output_f
     final_start = start_date if start_date and start_date.strip() else '2015-01-01'
     final_end = end_date if end_date and end_date.strip() else today
     
-    return helpers.fetch_best_performers_logic(final_start, final_end, output_format)
+    # Force output_format=0 to get dictionary from helper
+    result = helpers.fetch_best_performers_logic(final_start, final_end, output_format=0)
+    return json.dumps(result)
