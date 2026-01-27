@@ -16,5 +16,4 @@ COPY . .
 
 EXPOSE 8000
 
-# CHANGE THIS LINE: Run python directly so your code settings apply
 CMD ["python", "server.py"]
