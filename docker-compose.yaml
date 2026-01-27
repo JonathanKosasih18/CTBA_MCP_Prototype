@@ -9,3 +9,20 @@ services:
       - "8000:8000"
     env_file:
       - .env
+  
+  db:
+    image: mysql:8.0
+    container_name: ctba_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: mcpTestRoot1688!
+      MYSQL_DATABASE: ctba_real_db
+      MYSQL_USER: Joe
+      MYSQL_PASSWORD: JoeMCPTest18!
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+
+volumes:
+  db_data:
