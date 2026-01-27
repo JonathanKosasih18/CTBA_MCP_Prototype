@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import uvicorn
 import contextlib
@@ -24,6 +25,15 @@ app = FastAPI(
     description="Hybrid Server: Serves both MCP Protocol and REST API",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],  
+    allow_headers=["*"], 
 )
 
 # Mount MCP Server through SSE
@@ -119,4 +129,4 @@ async def list_tools():
 # Run the MCP server
 if __name__ == "__main__":
     print("Starting CTBA MCP Server...")
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
