@@ -1111,8 +1111,8 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="CTBA Analytics Server",
-    description="Hybrid Server: Serves both MCP Protocol and REST API",
+    title="BAM Analytics Server",
+    description="BAM MCP Server exposing Sales Analytics tools and endpoints.",
     version="1.0.0",
     lifespan=lifespan
 )

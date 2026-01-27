@@ -25,3 +25,4 @@ customers.csv
 /hidden
 /conversations
 mcp_client.log
+docker-compose.yaml
