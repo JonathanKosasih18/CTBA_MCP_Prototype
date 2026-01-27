@@ -1,12 +1,10 @@
-# CTBA MCP Server
+# BAM MCP Server
 
-Lightweight MCP server exposing analytic tools over the CTBA dataset.
+Lightweight MCP server exposing analytic tools over the BAM dataset.
 
-## Quick start
-- Run the MCP server:
-  - [server.py](server.py) (registers tools & prompts via [server_instance.py](server_instance.py))
-- Example client:
-  - [client.py](client.py) — shows SSE connection and LLM-driven agent loop.
+This MCP server is already integrated with FastAPI (see [main.py](main.py)) and exposes endpoints and the MCP SSE app.
+
+This MCP server is already dockerized and ready to be deployed (see [Dockerfile](Dockerfile)) — you can build the image and run the container as documented in the repo.
 
 ## Implemented features
 The server now includes the following implemented analytics tools (deduped/cleaned using normalization helpers in [helpers.py](helpers.py)):
@@ -49,8 +47,3 @@ The FastAPI integration is still currently under development
 - Configure DB and API keys via `.env` (loaded by [database.py](database.py) and [client.py](client.py)):
   - DB_USER, DB_PASSWORD, DB_HOST, DB_NAME
   - OPENAI_API_KEY (used by [client.py](client.py))
-
-## Notes
-- Deduplication & entity resolution rely on fuzzy matching and normalization helpers in [helpers.py](helpers.py).
-- Reports group by canonical identifiers (customer custcode / acc_customers.cid, users.username, clinics.clinicname, products.prodname) after cleaning and deduplication.
-- Scripts and raw SQL dumps are intentionally excluded from feature documentation (see /scripts and *.sql files in repo).

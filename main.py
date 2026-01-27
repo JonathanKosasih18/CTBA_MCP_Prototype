@@ -174,25 +174,36 @@ def load_official_users_map():
     digit_counts = defaultdict(int)
     temp_digit_to_id = {}
     
-    query = text("SELECT id, username, name FROM users")
+    query = text("SELECT id, username, name, level FROM users")
     with engine.connect() as conn:
         result = conn.execute(query)
         for row in result:
             u_id = str(row.id)
             code = str(row.username).lower().strip() 
             name = row.name
-            id_map[u_id] = {"id": u_id, "code": row.username, "name": name}
+            
+            raw_level = row.level
+            if not raw_level or str(raw_level).lower() in ['null', 'none', '']:
+                level = "NULL"
+            else:
+                level = str(raw_level).upper().strip()
+
+            id_map[u_id] = {"id": u_id, "code": row.username, "name": name, "level": level}
+            
             code_map[code] = u_id
             clean_n = normalize_name(name) 
             name_list.append({"id": u_id, "name": clean_n})
+            
             digits = re.search(r'\d+', code)
             if digits:
                 d_str = digits.group()
                 digit_counts[d_str] += 1
                 temp_digit_to_id[d_str] = u_id
+                
     for d_str, count in digit_counts.items():
         if count == 1:
             digit_map[d_str] = temp_digit_to_id[d_str]
+            
     return id_map, code_map, digit_map, name_list
 
 def load_customer_directory():
@@ -256,6 +267,20 @@ def load_clinic_directory():
                 "city_display": clean_city
             })
     return city_buckets
+
+def get_default_dates(start_date: Optional[str], end_date: Optional[str]):
+    """
+    Handles default date logic for transaction filters.
+    Default Start: 2015-01-01
+    Default End: Current Date (Asia/Jakarta)
+    """
+    tz = pytz.timezone('Asia/Jakarta')
+    today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
+    
+    final_start = start_date if start_date and start_date.strip() else '2015-01-01'
+    final_end = end_date if end_date and end_date.strip() else today
+    
+    return final_start, final_end
 
 # --- ANALYTICAL HELPERS ---
 
@@ -335,9 +360,6 @@ def fetch_best_performers_logic(start_date: str, end_date: str):
     and Fuzzy Matching for Products.
     Returns formatted Markdown string.
     """
-    from sqlalchemy import text
-    from collections import defaultdict
-    import re
 
     # --- 1. PRE-LOAD REFERENCE MAPS ---
     id_map, code_map, digit_map, name_list = load_official_users_map()
@@ -453,6 +475,35 @@ def fetch_best_performers_logic(start_date: str, end_date: str):
 """
     return md
 
+def fetch_product_stats_in_period(product_name_clean: str, start_date: str, end_date: str):
+    """
+    Helper to fetch Qty and Revenue for a specific normalized product name 
+    within a date range.
+    """
+    # We use LIKE with the normalized name to catch variations
+    # Note: We rely on the caller to have already fuzzy-matched 'product_name_clean' to a valid official name
+    query = text("""
+        SELECT SUM(qty) as total_qty, SUM(amount) as total_revenue
+        FROM transactions
+        WHERE product LIKE :prod_name
+            AND inv_date BETWEEN :start AND :end
+    """)
+    
+    # Add wildcards for containment logic (similar to your other tools)
+    search_term = f"%{product_name_clean}%"
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, {
+            "prod_name": search_term, 
+            "start": start_date, 
+            "end": end_date
+        }).fetchone()
+        
+        qty = int(result.total_qty) if result.total_qty else 0
+        revenue = int(result.total_revenue) if result.total_revenue else 0
+        
+    return qty, revenue
+
 # ==========================================
 # 4. MCP TOOLS
 # ==========================================
@@ -542,18 +593,33 @@ def fetch_deduplicated_visit_report() -> str:
     return md
 
 @mcp.tool()
-def fetch_deduplicated_sales_report() -> str:
+def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> str:
     """
     Retrieves a consolidated Sales Performance Report grouped by Salesman.
+    Can be filtered by a date range.
+
+    Parameters:
+        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
+        end_date (str, optional): YYYY-MM-DD. Defaults to today.
     """
+    # 1. Apply Date Logic
+    final_start, final_end = get_default_dates(start_date, end_date)
+
     id_map, code_map, digit_map, name_list = load_official_users_map()
-    query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+    
+    # 2. Updated Query with Date Filter
+    query = text("""
+        SELECT salesman_name, COUNT(*) as c 
+        FROM transactions 
+        WHERE inv_date BETWEEN :start AND :end
+        GROUP BY salesman_name
+    """)
     
     official_counts = defaultdict(int)
     unmatched_counts = defaultdict(int)
     
     with engine.connect() as conn:
-        for row in conn.execute(query):
+        for row in conn.execute(query, {"start": final_start, "end": final_end}):
             raw_field = str(row.salesman_name)
             count = row.c
             parts = re.split(r'[/\&,]', raw_field)
@@ -561,7 +627,8 @@ def fetch_deduplicated_sales_report() -> str:
                 part = part.strip()
                 if not part: continue
                 resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
-                if resolved_id: official_counts[resolved_id] += count
+                if resolved_id: 
+                    official_counts[resolved_id] += count
                 else:
                     core_unmatched = clean_salesman_name(part)
                     if not core_unmatched: core_unmatched = part.strip()
@@ -576,8 +643,8 @@ def fetch_deduplicated_sales_report() -> str:
     
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN MARKDOWN ---
-    md = "CONSOLIDATED SALES REPORT (Auto-Deduplicated):\n"
+    md = f"### CONSOLIDATED SALES REPORT (By Salesman)\n"
+    md += f"**Period:** {final_start} to {final_end}\n\n"
     md += "| Sales User ID | Sales Name | Transaction Count |\n"
     md += "| :--- | :--- | :--- |\n"
     for row in output_rows:
@@ -585,20 +652,33 @@ def fetch_deduplicated_sales_report() -> str:
     return md
 
 @mcp.tool()
-def fetch_transaction_report_by_customer_name() -> str:
+def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: str = None) -> str:
     """
     Retrieves transaction counts grouped by standardized Customer ID (CID).
-    Output Columns: Customer ID, Customer Name, Transaction Count.
+    Can be filtered by a date range.
+
+    Parameters:
+        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
+        end_date (str, optional): YYYY-MM-DD. Defaults to today.
     """
-    # 1. Fetch Raw Data
-    query = text("SELECT cust_id, COUNT(*) as c FROM transactions WHERE cust_id IS NOT NULL AND cust_id != '' GROUP BY cust_id")
-    cid_counts = defaultdict(int)
+    # 1. Apply Date Logic
+    final_start, final_end = get_default_dates(start_date, end_date)
+
+    # 2. Fetch Raw Data with Date Filter
+    query = text("""
+        SELECT cust_id, COUNT(*) as c 
+        FROM transactions 
+        WHERE cust_id IS NOT NULL 
+            AND cust_id != '' 
+            AND inv_date BETWEEN :start AND :end
+        GROUP BY cust_id
+    """)
     
-    # 2. Load CID -> Name Map
+    cid_counts = defaultdict(int)
     map_cid_to_name = load_acc_cid_map()
     
     with engine.connect() as conn:
-        for row in conn.execute(query):
+        for row in conn.execute(query, {"start": final_start, "end": final_end}):
             raw_cid = str(row.cust_id)
             count = row.c
             std_cid = standardize_customer_id(raw_cid)
@@ -606,14 +686,13 @@ def fetch_transaction_report_by_customer_name() -> str:
 
     output_rows = []
     for k, v in cid_counts.items():
-        # Look up the name, default to the ID if name not found
         display_name = map_cid_to_name.get(k, "Unknown / Not in DB")
         output_rows.append({"id": k, "name": display_name, "count": v})
 
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN MARKDOWN ---
-    md = "TRANSACTION REPORT (By Customer ID):\n"
+    md = f"### TRANSACTION REPORT (By Customer)\n"
+    md += f"**Period:** {final_start} to {final_end}\n\n"
     md += "| Customer ID | Customer Name | Transaction Count |\n"
     md += "| :--- | :--- | :--- |\n"
     for row in output_rows:
@@ -648,22 +727,33 @@ def fetch_visit_plans_by_salesman() -> str:
     return md
 
 @mcp.tool()
-def fetch_transaction_report_by_product() -> str:
+def fetch_transaction_report_by_product(start_date: str = None, end_date: str = None) -> str:
     """
     Retrieves sales performance grouped by Product (Units Sold & Revenue).
+    Can be filtered by a date range.
+
+    Parameters:
+        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
+        end_date (str, optional): YYYY-MM-DD. Defaults to today.
     """
+    # 1. Apply Date Logic
+    final_start, final_end = get_default_dates(start_date, end_date)
+
     id_to_name, official_products = load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
     target_clean_names = [x['clean'] for x in official_products]
     
+    # 2. Updated Query with Date Filter
     query = text("""
         SELECT item_id, product, SUM(qty) as units, CAST(SUM(amount) AS DECIMAL(65, 0)) as revenue 
-        FROM transactions GROUP BY item_id, product
+        FROM transactions 
+        WHERE inv_date BETWEEN :start AND :end
+        GROUP BY item_id, product
     """)
     grouped_data = defaultdict(lambda: {"count": 0, "revenue": 0})
     
     with engine.connect() as conn:
-        for row in conn.execute(query):
+        for row in conn.execute(query, {"start": final_start, "end": final_end}):
             raw_id = str(row.item_id).strip() if row.item_id else ""
             raw_name = str(row.product)
             units = int(row.units) if row.units else 0
@@ -706,7 +796,8 @@ def fetch_transaction_report_by_product() -> str:
     output_rows.sort(key=lambda x: int(float(x['revenue'])), reverse=True)
     
     # --- RETURN MARKDOWN ---
-    md = "PRODUCT SALES REPORT (Consolidated):\n"
+    md = f"### PRODUCT SALES REPORT (Consolidated)\n"
+    md += f"**Period:** {final_start} to {final_end}\n\n"
     md += "| Product Name | Units Sold (Qty) | Total Revenue |\n"
     md += "| :--- | :--- | :--- |\n"
     for row in output_rows:
@@ -920,6 +1011,196 @@ def fetch_best_performers(start_date: str = None, end_date: str = None) -> str:
     # Return markdown directly
     return fetch_best_performers_logic(final_start, final_end)
 
+@mcp.tool()
+def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
+    """
+    Calculates the number of transactions grouped by User Level (e.g., DC, TS, AM, NULL).
+
+    Description:
+        1. Loads all users and their assigned levels (DC, TS, SU, etc.).
+        2. Fetches all transactions.
+        3. Resolves the messy 'salesman_name' in transactions to a specific User ID.
+        4. Looks up the Level for that User ID.
+        5. Aggregates the count of transactions per Level.
+        6. Filters the output based on the requested 'target_levels'.
+
+    Parameters:
+        target_levels (str, optional): A comma-separated string of levels to filter by. 
+                                        Examples: "DC", "TS", "DC, TS", "NULL". 
+                                        If None or empty, returns ALL levels.
+
+    Returns:
+        str: A Markdown table with columns: Category | Count.
+
+    When to use:
+        Use when the user asks "How many transactions for DC salesmen?", 
+        "Compare transactions between DC and TS", or "Show transactions for users with no level".
+    """
+    # 1. Load Data
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    # 2. Parse Filter
+    filters = []
+    if target_levels:
+        # Split by comma, strip whitespace, and uppercase
+        filters = [x.strip().upper() for x in target_levels.split(',') if x.strip()]
+
+    # 3. Aggregate Counts
+    # Format: {"DC": 150, "TS": 20, "NULL": 5}
+    level_counts = defaultdict(int)
+    
+    query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
+    
+    with engine.connect() as conn:
+        for row in conn.execute(query):
+            raw_field = str(row.salesman_name)
+            count = row.c
+            
+            # Split multi-salesman entries (e.g., "Heri/Joko")
+            parts = re.split(r'[/\&,]', raw_field)
+            for part in parts:
+                part = part.strip()
+                if not part: continue
+                
+                # Resolve Identity
+                resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
+                
+                user_level = "UNKNOWN" # Default if identity resolution fails
+                
+                if resolved_id:
+                    # Look up the level from the updated id_map
+                    user_level = id_map[resolved_id].get('level', "NULL")
+                else:
+                    # If we can't find the user, categorize as Unidentified
+                    user_level = "UNIDENTIFIED"
+
+                level_counts[user_level] += count
+
+    # 4. Filter and Format Results
+    final_rows = []
+    total_filtered_count = 0
+
+    for level, count in level_counts.items():
+        # If filters exist, check if this level is in the list. 
+        # If no filters (filters is empty), include everything.
+        if not filters or level in filters:
+            final_rows.append({"category": level, "count": count})
+            total_filtered_count += count
+
+    # Sort by count descending
+    final_rows.sort(key=lambda x: x['count'], reverse=True)
+
+    # 5. Build Markdown
+    filter_desc = ", ".join(filters) if filters else "ALL"
+    md = f"### Transactions by User Level ({filter_desc})\n\n"
+    md += "| Category | Count |\n"
+    md += "| :--- | :--- |\n"
+    
+    for row in final_rows:
+        md += f"| {row['category']} | {row['count']} |\n"
+        
+    md += f"| **TOTAL** | **{total_filtered_count}** |\n"
+
+    return md
+
+@mcp.tool()
+def analyze_product_sales_growth(
+    product_name: str, 
+    period1_start: str, 
+    period1_end: str, 
+    period2_start: str, 
+    period2_end: str
+) -> str:
+    """
+    Analyzes the sales growth of a specific product between two time periods.
+
+    Description:
+        1. Identifies the official product name (correcting typos).
+        2. Fetches Total Units Sold and Revenue for Period 1.
+        3. Fetches Total Units Sold and Revenue for Period 2.
+        4. Calculates the percentage growth (or decline).
+        5. Returns a detailed Markdown analysis.
+
+    Parameters:
+        product_name (str): The name of the product (e.g., "Angel Aligner").
+        period1_start (str): Start date of the older/first period (YYYY-MM-DD).
+        period1_end (str): End date of the older/first period (YYYY-MM-DD).
+        period2_start (str): Start date of the newer/second period (YYYY-MM-DD).
+        period2_end (str): End date of the newer/second period (YYYY-MM-DD).
+
+    Returns:
+        str: A Markdown report comparison.
+    """
+    # 1. Identify Product (Fuzzy Match)
+    # Reusing existing logic to find the "Official Clean Name"
+    id_to_name, official_products = load_product_directory()
+    target_clean_names = [x['clean'] for x in official_products]
+    
+    input_clean = normalize_product_name(product_name)
+    match_clean = get_fuzzy_match(input_clean, target_clean_names, threshold=0.70)
+    
+    if not match_clean:
+        # Fallback: Try simple containment if fuzzy fails
+        for official in official_products:
+            if input_clean in official['clean']:
+                match_clean = official['clean']
+                break
+    
+    if not match_clean:
+        return f"Error: Could not find product matching '{product_name}'. Please verify the name."
+
+    # Get the display name for the report
+    official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
+    display_name = official_entry['name'] if official_entry else product_name.title()
+
+    # 2. Fetch Data for Both Periods
+    qty_p1, rev_p1 = fetch_product_stats_in_period(match_clean, period1_start, period1_end)
+    qty_p2, rev_p2 = fetch_product_stats_in_period(match_clean, period2_start, period2_end)
+
+    # 3. Calculate Growth
+    # Avoid division by zero
+    if qty_p1 > 0:
+        qty_growth = ((qty_p2 - qty_p1) / qty_p1) * 100
+    else:
+        qty_growth = 100.0 if qty_p2 > 0 else 0.0
+
+    if rev_p1 > 0:
+        rev_growth = ((rev_p2 - rev_p1) / rev_p1) * 100
+    else:
+        rev_growth = 100.0 if rev_p2 > 0 else 0.0
+
+    # 4. Determine Trend Direction
+    trend_emoji = "📈" if qty_growth > 0 else ("📉" if qty_growth < 0 else "➖")
+    trend_text = "Growth" if qty_growth > 0 else ("Decline" if qty_growth < 0 else "Stagnant")
+
+    # 5. Format Output
+    md = f"""
+### {trend_emoji} Sales Growth Analysis: {display_name}
+
+** Comparison Periods:**
+1. **Baseline:** {period1_start} to {period1_end}
+2. **Current:** {period2_start} to {period2_end}
+
+| Metric | Period 1 (Old) | Period 2 (New) | Growth % |
+| :--- | :--- | :--- | :--- |
+| **Units Sold** | {qty_p1} | {qty_p2} | **{qty_growth:+.2f}%** |
+| **Revenue** | Rp {rev_p1:,.0f} | Rp {rev_p2:,.0f} | **{rev_growth:+.2f}%** |
+
+#### 📊 Analysis Summary
+The sales volume for **{display_name}** has **{trend_text.lower()}d by {abs(qty_growth):.2f}%** in the second period compared to the first.
+Revenue shifted by **{rev_growth:+.2f}%**.
+"""
+    
+    # Add simple insight logic
+    if qty_growth > 0 and rev_growth < 0:
+        md += "\n> **Insight:** Units sold increased, but revenue decreased. This suggests a **price drop** or heavy discounting."
+    elif qty_growth < 0 and rev_growth > 0:
+        md += "\n> **Insight:** Fewer units sold, but revenue increased. This suggests a **price increase** or sales of higher-value variants."
+    elif qty_p1 == 0 and qty_p2 == 0:
+        md += "\n> **Note:** No transactions recorded for this product in either period."
+
+    return md
+
 # ==========================================
 # 5. MCP PROMPTS
 # ==========================================
@@ -955,23 +1236,31 @@ def generate_planned_visits_report_by_clinic() -> str:
     """
 
 @mcp.prompt()
-def generate_transaction_report_by_salesmen() -> str:
-    """Generates a prompt to request the consolidated sales report."""
-    return """
-    I need the Sales Performance Report.
-    Please run the tool `fetch_deduplicated_sales_report`.
-    
-    The tool returns a formatted Markdown table. Please display it exactly as is.
-    """
-
-@mcp.prompt()
 def generate_transaction_report_by_customer() -> str:
     """Generates a prompt to request the customer transaction report."""
     return """
     I need the Transaction Report grouped by Customer Name.
-    Please run the tool `fetch_transaction_report_by_customer_name`.
     
-    The tool returns a formatted Markdown table. Please display it exactly as is.
+    ### Instructions for the AI:
+    1. Check if the user specified a date range (e.g., "Last year", "January 2024", "since 2023", "last month", "Q1 2024", "sales in 2025").
+    2. If yes, determine the `start_date` and `end_date` (YYYY-MM-DD).
+    3. If no date is specified, leave arguments empty 
+    
+    Please run the tool `fetch_transaction_report_by_customer_name(start_date=..., end_date=...)`.
+    """
+
+@mcp.prompt()
+def generate_transaction_report_by_salesmen() -> str:
+    """Generates a prompt to request the consolidated sales report."""
+    return """
+    I need the Sales Performance Report.
+    
+    ### Instructions for the AI:
+    1. Check if the user specified a date range (e.g., "Last year", "January 2024", "since 2023", "last month", "Q1 2024", "sales in 2025").
+    2. If yes, determine the `start_date` and `end_date` (YYYY-MM-DD).
+    3. If no date is specified, leave arguments empty.
+    
+    Please run the tool `fetch_deduplicated_sales_report(start_date=..., end_date=...)`.
     """
 
 @mcp.prompt()
@@ -979,9 +1268,13 @@ def generate_transaction_report_by_product() -> str:
     """Generates a prompt to request the product sales report."""
     return """
     I need the Transaction Report grouped by Product.
-    Please run the tool `fetch_transaction_report_by_product`.
     
-    The tool returns a formatted Markdown table. Please display it exactly as is.
+    ### Instructions for the AI:
+    1. Check if the user specified a date range (e.g., "Last year", "January 2024", "since 2023", "last month", "Q1 2024", "sales in 2025").
+    2. If yes, determine the `start_date` and `end_date` (YYYY-MM-DD).
+    3. If no date is specified, leave arguments empty.
+    
+    Please run the tool `fetch_transaction_report_by_product(start_date=..., end_date=...)`.
     """
 
 @mcp.prompt()
@@ -1098,6 +1391,47 @@ def generate_best_performers_report() -> str:
     4. **Present the Result**: The tool will return a formatted Markdown report. Please display it exactly as is.
     """
 
+@mcp.prompt()
+def analyze_transactions_by_salesman_level() -> str:
+    """
+    Generates a prompt to analyze transaction volume based on salesman hierarchy levels (DC, TS, etc).
+    """
+    return """
+    Act as a Sales Analyst. I need a breakdown of transactions based on the Salesman's Level (e.g., DC, TS).
+
+    Please analyze the user's request to determine which levels they want:
+    - If they ask for "Field Salesmen" or "DC", use argument "DC".
+    - If they ask for "Telesales" or "TS", use argument "TS".
+    - If they ask for "No Level" or "Unknown Level", use argument "NULL".
+    - If they ask for multiples (e.g. "DC and TS"), use "DC, TS".
+    - If they ask for "All Levels" or general breakdown, leave the argument empty.
+
+    Run the tool `fetch_transaction_counts_by_user_level` with the determined argument.
+
+    Output the table exactly as provided by the tool.
+    """
+
+@mcp.prompt()
+def analyze_product_growth_between_periods() -> str:
+    """
+    Generates a prompt to analyze product sales growth between two specific time periods.
+    """
+    return """
+    I need to compare the sales growth of a product between two time periods.
+    
+    ### Instructions for the AI:
+    1. **Identify the Product**: Extract the product name from the user's request (e.g., "Angel Aligner").
+    2. **Identify Period 1 (Baseline)**: Extract the start and end dates for the first period (YYYY-MM-DD).
+    3. **Identify Period 2 (Comparison)**: Extract the start and end dates for the second period (YYYY-MM-DD).
+    
+    **Example User Request:** "Compare sales of Damon Brackets in Q1 2023 vs Q1 2024"
+    - Product: "Damon Brackets"
+    - Period 1: 2023-01-01 to 2023-03-31
+    - Period 2: 2024-01-01 to 2024-03-31
+    
+    Please run the tool `analyze_product_sales_growth` with these arguments.
+    """
+
 # ==========================================
 # 6. FASTAPI INTEGRATION & REST ENDPOINTS
 # ==========================================
@@ -1160,6 +1494,10 @@ def get_transactions_by_salesman():
 def get_transactions_by_product():
     return fetch_transaction_report_by_product()
 
+@app.get("/transactions/levels")
+def get_transactions_by_level(levels: Optional[str] = Query(None, description="Comma-separated levels (DC, TS, NULL)")):
+    return fetch_transaction_counts_by_user_level(levels)
+
 @app.get("/reports/salesmen")
 def get_reports_by_salesman():
     return fetch_report_counts_by_salesman()
@@ -1167,6 +1505,13 @@ def get_reports_by_salesman():
 @app.get("/performance/salesmen")
 def get_salesman_performance_scorecard():
     return fetch_comprehensive_salesman_performance()
+
+@app.get("/performance/best")
+def get_best_performers(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    return fetch_best_performers(start_date, end_date)
 
 @app.get("/analysis/salesman/{name}")
 def analyze_salesman_effectiveness(name: str):
@@ -1176,12 +1521,13 @@ def analyze_salesman_effectiveness(name: str):
 def compare_salesmen(salesman_a: str, salesman_b: str):
     return fetch_salesman_comparison_data(salesman_a, salesman_b)
 
-@app.get("/performance/best")
-def get_best_performers(
-    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+@app.get("/analysis/growth/product")
+def get_product_growth_analysis(
+    product: str,
+    p1_start: str, p1_end: str,
+    p2_start: str, p2_end: str
 ):
-    return fetch_best_performers(start_date, end_date)
+    return analyze_product_sales_growth(product, p1_start, p1_end, p2_start, p2_end)
 
 @app.get("/tools")
 async def list_tools():
@@ -1224,5 +1570,4 @@ async def list_tools():
 # Run the MCP server
 if __name__ == "__main__":
     print("Starting BAM MCP Server...")
-    # NOTE: Passing the app object directly (not "main:app") is crucial to prevent pickling errors
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
