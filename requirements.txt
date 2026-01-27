@@ -1,8 +1,8 @@
 fastapi
 uvicorn[standard]
-mcp
-python-dotenv
 sqlalchemy
 pymysql
+python-dotenv
+mcp
 cryptography
 pytz
