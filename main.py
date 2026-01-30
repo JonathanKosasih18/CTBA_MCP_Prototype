@@ -938,7 +938,7 @@ def fetch_salesman_visit_history(salesman_name: str) -> str:
         3. Fetches their recent 'visitnote' entries from the reports table.
     
     Parameters:
-        salesman_name (str): The name or code of the salesman (e.g., "Wilson", "PS100").
+        salesman_name (str): The name of the salesman (e.g., "Wilson", "Gladys").
 
     Returns:
         str: Markdown formatted stats and visit notes.
@@ -1026,8 +1026,8 @@ def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
 
     Parameters:
         target_levels (str, optional): A comma-separated string of levels to filter by. 
-                                        Examples: "DC", "TS", "DC, TS", "NULL". 
-                                        If None or empty, returns ALL levels.
+        Examples: "DC", "TS", "DC, TS", "NULL". 
+        If None or empty, returns ALL levels.
 
     Returns:
         str: A Markdown table with columns: Category | Count.
@@ -1246,7 +1246,9 @@ def generate_transaction_report_by_customer() -> str:
     2. If yes, determine the `start_date` and `end_date` (YYYY-MM-DD).
     3. If no date is specified, leave arguments empty 
     
-    Please run the tool `fetch_transaction_report_by_customer_name(start_date=..., end_date=...)`.
+    Please run the tool `fetch_transaction_report_by_customer_name(start_date=..., end_date=...)`. 
+
+    The tool returns a formatted Markdown table. Please display it exactly as is.
     """
 
 @mcp.prompt()
@@ -1261,6 +1263,8 @@ def generate_transaction_report_by_salesmen() -> str:
     3. If no date is specified, leave arguments empty.
     
     Please run the tool `fetch_deduplicated_sales_report(start_date=..., end_date=...)`.
+
+    The tool returns a formatted Markdown table. Please display it exactly as is.
     """
 
 @mcp.prompt()
@@ -1275,6 +1279,8 @@ def generate_transaction_report_by_product() -> str:
     3. If no date is specified, leave arguments empty.
     
     Please run the tool `fetch_transaction_report_by_product(start_date=..., end_date=...)`.
+
+    The tool returns a formatted Markdown table. Please display it exactly as is.
     """
 
 @mcp.prompt()
@@ -1332,8 +1338,7 @@ def analyze_salesman_visit_effectiveness(salesman_name: str) -> str:
 @mcp.prompt()
 def compare_salesmen_effectiveness(salesman_a: str, salesman_b: str) -> str:
     """
-    Generates a prompt to compare the performance and effectiveness of two salesmen,
-    including each salesman's strengths and weaknesses with evidence and short justifications.
+    Generates a prompt to compare the performance and effectiveness of two salesmen, including each salesman's strengths and weaknesses with evidence and short justifications.
     """
     return f"""
     Act as a Senior Sales Manager. I need a clear comparative analysis between two salesmen: {salesman_a} vs {salesman_b}.
