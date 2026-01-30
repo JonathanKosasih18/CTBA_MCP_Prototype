@@ -322,8 +322,19 @@ def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
                 if resolved == target_id:
                     transaction_count += row.c
 
-    # 3. Get Visit Notes
+    # 3. Count Total Visits (use COUNT on reports, not len of notes)
     visit_notes = []
+    visit_count_query = text("""
+        SELECT COUNT(r.id) as c
+        FROM reports r
+        JOIN plans p ON r.idplan = p.id
+        WHERE p.userid = :uid
+    """)
+    with engine.connect() as conn:
+        row = conn.execute(visit_count_query, {"uid": target_id}).fetchone()
+        total_visits = int(row.c) if row and row.c else 0
+
+    # 4. Get Recent Visit Notes (limited to 50)
     query_notes = text("""
         SELECT r.visitnote 
         FROM reports r
@@ -339,8 +350,6 @@ def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
             if row.visitnote and str(row.visitnote).strip():
                 visit_notes.append(str(row.visitnote).strip())
 
-    total_visits = len(visit_notes)
-    
     # --- RETURN DICTIONARY ---
     return {
         "id": target_id,
