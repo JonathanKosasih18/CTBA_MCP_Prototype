@@ -6,7 +6,7 @@ import pytz
 import json
 import uvicorn
 import contextlib
-from typing import Optional, Union, List, Dict
+from typing import Any, Optional, Union, List, Dict
 from collections import defaultdict
 from dotenv import load_dotenv
 
@@ -296,10 +296,10 @@ def find_salesman_id_by_name(name_query: str):
         return resolved_id, id_map[resolved_id]['name']
     return None, None
 
-def fetch_single_salesman_data(salesman_name: str):
+def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
     """
     Retrieves transaction count and visit notes for a single salesman.
-    Returns a Dictionary object (not JSON string yet).
+    Returns a Dictionary object.
     """
     # 1. Identify Salesman
     target_id, official_name = find_salesman_id_by_name(salesman_name)
@@ -350,7 +350,7 @@ def fetch_single_salesman_data(salesman_name: str):
         "recent_notes": visit_notes
     }
 
-def fetch_best_performers_logic(start_date: str, end_date: str):
+def fetch_best_performers_logic(start_date: str, end_date: str) -> Dict[str, Any]:
     """
     Determines best performers with rigorous Identity Resolution for Salesmen
     and Fuzzy Matching for Products.
@@ -495,10 +495,9 @@ def fetch_product_stats_in_period(product_name_clean: str, start_date: str, end_
 # ==========================================
 
 @mcp.tool()
-def fetch_deduplicated_visit_report() -> str:
+def fetch_deduplicated_visit_report() -> List[Dict]:
     """
     Retrieves a consolidated report of 'Planned Visits' grouped by standardized Customer ID (CID).
-    Returns JSON string.
     """
     # 1. Get Visit Counts
     visit_counts = defaultdict(int)
@@ -519,21 +518,15 @@ def fetch_deduplicated_visit_report() -> str:
                 "id": c_id,
                 "clean": c_name
             })
-            internal_name_map[c_id] = row.custname # Store original name for display
+            internal_name_map[c_id] = row.custname
 
     # 3. Get Name to CID Maps
-    # map_name_to_cid: Used to find the CID based on the string name
-    # map_cid_to_name: Used to display the official name in the final report
     map_name_to_cid = load_name_to_cid_map()
     map_cid_to_name = load_acc_cid_map()
-    
     available_cid_names = list(map_name_to_cid.keys())
 
     # 4. Aggregate by CID
     cid_counts = defaultdict(int)
-    
-    # Store the resolved name for the CID to ensure we have a display name
-    # Format: {CID: "Display Name"}
     final_names = {} 
 
     for cust in internal_customers:
@@ -544,8 +537,6 @@ def fetch_deduplicated_visit_report() -> str:
         if count == 0 or not clean_name: continue
 
         found_cid = map_name_to_cid.get(clean_name)
-        
-        # Fuzzy match if exact match fails
         if not found_cid:
             match = get_fuzzy_match(clean_name, available_cid_names, threshold=0.88)
             if match: 
@@ -553,11 +544,9 @@ def fetch_deduplicated_visit_report() -> str:
         
         if found_cid: 
             cid_counts[found_cid] += count
-            # Use official name from acc_customers if available
             if found_cid not in final_names:
                 final_names[found_cid] = map_cid_to_name.get(found_cid, clean_name.title())
         else: 
-            # Handle unmatched internal IDs
             key = f"[No CID] {internal_id}"
             cid_counts[key] += count
             final_names[key] = internal_name_map.get(internal_id, "Unknown Internal")
@@ -570,8 +559,8 @@ def fetch_deduplicated_visit_report() -> str:
         
     final_rows.sort(key=lambda x: x['count'], reverse=True)
 
-    # --- RETURN JSON ---
-    return json.dumps(final_rows)
+    # --- RETURN LIST[DICT] ---
+    return final_rows
 
 @mcp.tool()
 def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> str:
@@ -922,7 +911,7 @@ def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
         str: JSON formatted data with separate sections for Salesman A and B.
 
     When to use:
-        Use when the user asks to "compare Wilson and Gladys", "who is better between A and B",
+        Use when the user asks to "compare Wilson and Gladys", "who is better between A and B"
         or "compare visit effectiveness of A vs B".
     """
     report_a = fetch_single_salesman_data(salesman_a)
