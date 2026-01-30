@@ -341,7 +341,7 @@ def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
         JOIN plans p ON r.idplan = p.id
         WHERE p.userid = :uid
         ORDER BY r.date DESC
-        LIMIT 50
+        LIMIT 30
     """)
     
     with engine.connect() as conn:
