@@ -563,11 +563,10 @@ def fetch_deduplicated_visit_report() -> List[Dict]:
     return final_rows
 
 @mcp.tool()
-def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> str:
+def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> List[Dict]:
     """
     Retrieves a consolidated Sales Performance Report grouped by Salesman.
     Can be filtered by a date range.
-    Returns JSON string.
 
     Parameters:
         start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
@@ -578,7 +577,6 @@ def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None
 
     id_map, code_map, digit_map, name_list = load_official_users_map()
     
-    # 2. Updated Query with Date Filter
     query = text("""
         SELECT salesman_name, COUNT(*) as c 
         FROM transactions 
@@ -614,24 +612,21 @@ def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None
     
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    # --- RETURN LIST[DICT] ---
+    return output_rows
 
 @mcp.tool()
-def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: str = None) -> str:
+def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: str = None) -> List[Dict]:
     """
     Retrieves transaction counts grouped by standardized Customer ID (CID).
     Can be filtered by a date range.
-    Returns JSON string.
 
     Parameters:
         start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
         end_date (str, optional): YYYY-MM-DD. Defaults to today.
     """
-    # 1. Apply Date Logic
     final_start, final_end = get_default_dates(start_date, end_date)
 
-    # 2. Fetch Raw Data with Date Filter
     query = text("""
         SELECT cust_id, COUNT(*) as c 
         FROM transactions 
@@ -658,14 +653,12 @@ def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: 
 
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    return output_rows
 
 @mcp.tool()
-def fetch_visit_plans_by_salesman() -> str:
+def fetch_visit_plans_by_salesman() -> List[Dict]:
     """
     Retrieves the count of 'Planned Visits' grouped by Salesman.
-    Returns JSON string.
     """
     id_map, _, _, _ = load_official_users_map()
     query = text("SELECT userid, COUNT(*) as c FROM plans GROUP BY userid")
@@ -681,28 +674,24 @@ def fetch_visit_plans_by_salesman() -> str:
     
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    return output_rows
 
 @mcp.tool()
-def fetch_transaction_report_by_product(start_date: str = None, end_date: str = None) -> str:
+def fetch_transaction_report_by_product(start_date: str = None, end_date: str = None) -> List[Dict]:
     """
     Retrieves sales performance grouped by Product (Units Sold & Revenue).
     Can be filtered by a date range.
-    Returns JSON string.
 
     Parameters:
         start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
         end_date (str, optional): YYYY-MM-DD. Defaults to today.
     """
-    # 1. Apply Date Logic
     final_start, final_end = get_default_dates(start_date, end_date)
 
     id_to_name, official_products = load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
     target_clean_names = [x['clean'] for x in official_products]
     
-    # 2. Updated Query with Date Filter
     query = text("""
         SELECT item_id, product, SUM(qty) as units, CAST(SUM(amount) AS DECIMAL(65, 0)) as revenue 
         FROM transactions 
@@ -754,14 +743,12 @@ def fetch_transaction_report_by_product(start_date: str = None, end_date: str = 
         output_rows.append({"name": name, "count": data["count"], "revenue": data["revenue"]}) 
     output_rows.sort(key=lambda x: int(float(x['revenue'])), reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    return output_rows
 
 @mcp.tool()
-def fetch_visit_plans_by_clinic() -> str:
+def fetch_visit_plans_by_clinic() -> List[Dict]:
     """
     Retrieves 'Planned Visits' grouped by Clinic, distinguishing branches by City.
-    Returns JSON string.
     """
     city_buckets = load_clinic_directory()
     query = text("SELECT cliniccode, COUNT(*) as c FROM plans GROUP BY cliniccode")
@@ -795,14 +782,12 @@ def fetch_visit_plans_by_clinic() -> str:
 
     final_output.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(final_output)
+    return final_output
 
 @mcp.tool()
-def fetch_report_counts_by_salesman() -> str:
+def fetch_report_counts_by_salesman() -> List[Dict]:
     """
     Retrieves the count of *Completed* Visits (Reports) grouped by Salesman.
-    Returns JSON string.
     """
     id_map, _, _, _ = load_official_users_map()
     query = text("SELECT p.userid, COUNT(r.id) as c FROM reports r JOIN plans p ON r.idplan = p.id GROUP BY p.userid")
@@ -817,14 +802,12 @@ def fetch_report_counts_by_salesman() -> str:
                 output_rows.append({"user_id": f"ID {u_id}", "name": "[Unknown User]", "count": row.c})
     output_rows.sort(key=lambda x: x['count'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    return output_rows
 
 @mcp.tool()
-def fetch_comprehensive_salesman_performance() -> str:
+def fetch_comprehensive_salesman_performance() -> List[Dict]:
     """
     Retrieves a 360-degree 'Scorecard' for Salesmen (Plans vs Visits vs Sales).
-    Returns JSON string.
     """
     id_map, code_map, digit_map, name_list = load_official_users_map()
     master_data = defaultdict(lambda: {'plans': 0, 'reports': 0, 'transactions': 0})
@@ -864,11 +847,10 @@ def fetch_comprehensive_salesman_performance() -> str:
 
     output_rows.sort(key=lambda x: x['transactions'], reverse=True)
     
-    # --- RETURN JSON ---
-    return json.dumps(output_rows)
+    return output_rows
 
 @mcp.tool()
-def fetch_salesman_visit_history(salesman_name: str) -> str:
+def fetch_salesman_visit_history(salesman_name: str) -> Dict[str, Any]:
     """
     Fetches detailed visit notes and transaction stats for a SPECIFIC salesman.
 
@@ -889,11 +871,10 @@ def fetch_salesman_visit_history(salesman_name: str) -> str:
         or "Check the effectiveness of [Name]".
     """
 
-    result = fetch_single_salesman_data(salesman_name)
-    return json.dumps(result)
+    return fetch_single_salesman_data(salesman_name)
 
 @mcp.tool()
-def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
+def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> Dict[str, Any]:
     """
     Fetches side-by-side visit notes and transaction stats for TWO salesmen.
 
@@ -917,15 +898,10 @@ def fetch_salesman_comparison_data(salesman_a: str, salesman_b: str) -> str:
     report_a = fetch_single_salesman_data(salesman_a)
     report_b = fetch_single_salesman_data(salesman_b)
     
-    result = {
-        "salesman_a": report_a,
-        "salesman_b": report_b
-    }
-
-    return json.dumps(result)
+    return {"salesman_a": report_a, "salesman_b": report_b}
 
 @mcp.tool()
-def fetch_best_performers(start_date: str = None, end_date: str = None) -> str:
+def fetch_best_performers(start_date: str = None, end_date: str = None) -> Dict[str, Any]:
     """
     Fetches a leaderboard of best performing salesmen and products within a date range or overall.
     
@@ -948,18 +924,15 @@ def fetch_best_performers(start_date: str = None, end_date: str = None) -> str:
         Use when the user asks "Who is the best salesman?", "Show me the top performers for January",
         or "Who had the highest conversion rate last year?".
     """
-    # --- DEFAULT DATE LOGIC ---
-    # Apply Defaults if arguments are missing or empty strings
     tz = pytz.timezone('Asia/Jakarta')
     today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
     final_start = start_date if start_date and start_date.strip() else '2015-01-01'
     final_end = end_date if end_date and end_date.strip() else today
     
-    result = fetch_best_performers_logic(final_start, final_end)
-    return json.dumps(result)
+    return fetch_best_performers_logic(final_start, final_end)
 
 @mcp.tool()
-def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
+def fetch_transaction_counts_by_user_level(target_levels: str = None) -> Dict[str, Any]:
     """
     Calculates the number of transactions grouped by User Level (e.g., DC, TS, AM, NULL).
 
@@ -989,11 +962,9 @@ def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
     # 2. Parse Filter
     filters = []
     if target_levels:
-        # Split by comma, strip whitespace, and uppercase
         filters = [x.strip().upper() for x in target_levels.split(',') if x.strip()]
 
     # 3. Aggregate Counts
-    # Format: {"DC": 150, "TS": 20, "NULL": 5}
     level_counts = defaultdict(int)
     
     query = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
@@ -1002,25 +973,16 @@ def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
         for row in conn.execute(query):
             raw_field = str(row.salesman_name)
             count = row.c
-            
-            # Split multi-salesman entries (e.g., "Heri/Joko")
             parts = re.split(r'[/\&,]', raw_field)
             for part in parts:
                 part = part.strip()
                 if not part: continue
-                
-                # Resolve Identity
                 resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
-                
-                user_level = "UNKNOWN" # Default if identity resolution fails
-                
+                user_level = "UNKNOWN"
                 if resolved_id:
-                    # Look up the level from the updated id_map
                     user_level = id_map[resolved_id].get('level', "NULL")
                 else:
-                    # If we can't find the user, categorize as Unidentified
                     user_level = "UNIDENTIFIED"
-
                 level_counts[user_level] += count
 
     # 4. Filter and Format Results
@@ -1034,13 +996,11 @@ def fetch_transaction_counts_by_user_level(target_levels: str = None) -> str:
 
     final_rows.sort(key=lambda x: x['count'], reverse=True)
 
-    # --- RETURN JSON ---
-    result = {
+    return {
         "breakdown": final_rows,
         "total_filtered": total_filtered_count,
         "filters_applied": filters if filters else "ALL"
     }
-    return json.dumps(result)
 
 @mcp.tool()
 def analyze_product_sales_growth(
@@ -1049,7 +1009,7 @@ def analyze_product_sales_growth(
     period1_end: str, 
     period2_start: str, 
     period2_end: str
-) -> str:
+) -> Dict[str, Any]:
     """
     Analyzes the sales growth of a specific product between two time periods.
 
@@ -1070,8 +1030,7 @@ def analyze_product_sales_growth(
     Returns:
         str: A JSON formatted report analyzing the sales growth of the product.
     """
-    # 1. Identify Product (Fuzzy Match)
-    # Reusing existing logic to find the "Official Clean Name"
+    # 1. Identify Product
     id_to_name, official_products = load_product_directory()
     target_clean_names = [x['clean'] for x in official_products]
     
@@ -1079,16 +1038,18 @@ def analyze_product_sales_growth(
     match_clean = get_fuzzy_match(input_clean, target_clean_names, threshold=0.70)
     
     if not match_clean:
-        return json.dumps({"error": f"Could not find product matching '{product_name}'."})
+        for official in official_products:
+            if input_clean in official['clean']:
+                match_clean = official['clean']
+                break
     
     if not match_clean:
-        return f"Error: Could not find product matching '{product_name}'. Please verify the name."
+        return {"error": f"Could not find product matching '{product_name}'."}
 
-    # Get the display name
     official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
     display_name = official_entry['name'] if official_entry else product_name.title()
 
-    # 2. Fetch Data for Both Periods
+    # 2. Fetch Data
     qty_p1, rev_p1 = fetch_product_stats_in_period(match_clean, period1_start, period1_end)
     qty_p2, rev_p2 = fetch_product_stats_in_period(match_clean, period2_start, period2_end)
 
@@ -1103,11 +1064,10 @@ def analyze_product_sales_growth(
     else:
         rev_growth = 100.0 if rev_p2 > 0 else 0.0
 
-    # 4. Determine Trend Direction
     trend_text = "Growth" if qty_growth > 0 else ("Decline" if qty_growth < 0 else "Stagnant")
 
-    # --- RETURN JSON ---
-    result = {
+    # 5. Format Output (Return DICT)
+    return {
         "product": display_name,
         "period_1": {
             "start": period1_start,
@@ -1122,12 +1082,11 @@ def analyze_product_sales_growth(
             "revenue": rev_p2
         },
         "growth": {
-            "units_percentage": round(qty_growth, 2),
-            "revenue_percentage": round(rev_growth, 2),
+            "units_percent": round(qty_growth, 2),
+            "revenue_percent": round(rev_growth, 2),
             "trend": trend_text
         }
     }
-    return json.dumps(result)
 
 # ==========================================
 # 5. MCP PROMPTS
