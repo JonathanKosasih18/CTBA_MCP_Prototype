@@ -557,7 +557,7 @@ def fetch_deduplicated_visit_report() -> List[Dict]:
             # Fallback: No CID found, keep as is (prefixed to indicate issue)
             key = f"[No CID] {internal_id}"
             cid_counts[key] += count
-            final_display_names[key] = f"{raw_name} (Unverified)"
+            final_display_names[key] = f"{raw_name} (Not in ACC-DB)"
 
     # 5. Build Final Result List
     final_rows = []
