@@ -506,70 +506,74 @@ def fetch_product_stats_in_period(product_name_clean: str, start_date: str, end_
 @mcp.tool()
 def fetch_deduplicated_visit_report() -> List[Dict]:
     """
-    Retrieves a consolidated report of 'Planned Visits' grouped by standardized Customer ID (CID).
+    Retrieves a consolidated report of 'Planned Visits' grouped by Customer.
+    Aggregates counts by resolving customers to their official 'acc_customers' identity.
     """
-    # 1. Get Visit Counts
+    # 1. Get Visit Counts from Plans (grouped by customers.id)
     visit_counts = defaultdict(int)
     query_plans = text("SELECT custcode, COUNT(*) as c FROM plans GROUP BY custcode")
     with engine.connect() as conn:
         for row in conn.execute(query_plans):
-            visit_counts[str(row.custcode)] = row.c
+            if row.custcode:
+                visit_counts[str(row.custcode)] = row.c
 
-    # 2. Get Internal ID to Name Map (for fallback)
-    internal_name_map = {}
-    internal_customers = []
-    query_cust = text("SELECT id, custname FROM customers")
-    with engine.connect() as conn:
-        for row in conn.execute(query_cust):
-            c_id = str(row.id)
-            c_name = normalize_name(row.custname)
-            internal_customers.append({
-                "id": c_id,
-                "clean": c_name
-            })
-            internal_name_map[c_id] = row.custname
+    # 2. Load Directory from 'customers' table (Source of the ID in plans)
+    internal_customers = load_customer_directory()
 
-    # 3. Get Name to CID Maps
+    # 3. Load Maps from 'acc_customers' (The Truth)
     map_name_to_cid = load_name_to_cid_map()
     map_cid_to_name = load_acc_cid_map()
+    
     available_cid_names = list(map_name_to_cid.keys())
 
-    # 4. Aggregate by CID
+    # 4. Aggregate Logic
     cid_counts = defaultdict(int)
-    final_names = {} 
+    final_display_names = {} 
 
     for cust in internal_customers:
         internal_id = cust['id']
+        raw_name = cust['name']
         clean_name = cust['clean']
-        count = visit_counts.get(internal_id, 0)
         
-        if count == 0 or not clean_name: continue
+        count = visit_counts.get(internal_id, 0)
+        if count == 0: continue
 
+        # Try to resolve to a CID
         found_cid = map_name_to_cid.get(clean_name)
+        
+        # If no exact match, try fuzzy match against acc_customers names
         if not found_cid:
             match = get_fuzzy_match(clean_name, available_cid_names, threshold=0.88)
             if match: 
                 found_cid = map_name_to_cid[match]
         
         if found_cid: 
+            # Aggregation Success: Add to the official CID bucket
             cid_counts[found_cid] += count
-            if found_cid not in final_names:
-                final_names[found_cid] = map_cid_to_name.get(found_cid, clean_name.title())
+            # Ensure we have the display name set
+            if found_cid not in final_display_names:
+                final_display_names[found_cid] = map_cid_to_name.get(found_cid, raw_name)
         else: 
+            # Fallback: No CID found, keep as is (prefixed to indicate issue)
             key = f"[No CID] {internal_id}"
             cid_counts[key] += count
-            final_names[key] = internal_name_map.get(internal_id, "Unknown Internal")
+            final_display_names[key] = f"{raw_name} (Unverified)"
 
-    # 5. Build Result Data
+    # 5. Build Final Result List
     final_rows = []
     for k, v in cid_counts.items():
-        display_name = final_names.get(k, "Unknown")
-        final_rows.append({"id": k, "name": display_name, "count": v})
+        display_name = final_display_names.get(k, "Unknown")
+        final_rows.append({
+            "id": k, 
+            "name": display_name, 
+            "count": v
+        })
         
+    # 6. Sort by Visit Count Descending
     final_rows.sort(key=lambda x: x['count'], reverse=True)
 
-    # --- RETURN LIST[DICT] ---
-    return final_rows
+    # 7. Limit to Top 50 to prevent Context Overflow
+    return final_rows[:50]
 
 @mcp.tool()
 def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> List[Dict]:
