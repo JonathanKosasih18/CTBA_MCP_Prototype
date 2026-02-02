@@ -702,54 +702,51 @@ def fetch_transaction_report_by_product(start_date: str = None, end_date: str = 
     target_clean_names = [x['clean'] for x in official_products]
     
     query = text("""
-        SELECT item_id, product, SUM(qty) as units, CAST(SUM(amount) AS DECIMAL(65, 0)) as revenue 
+        SELECT product, SUM(qty) as units, CAST(SUM(amount) AS DECIMAL(65, 0)) as revenue 
         FROM transactions 
         WHERE inv_date BETWEEN :start AND :end
-        GROUP BY item_id, product
+        GROUP BY product
     """)
+    
     grouped_data = defaultdict(lambda: {"count": 0, "revenue": 0})
     
     with engine.connect() as conn:
         for row in conn.execute(query, {"start": final_start, "end": final_end}):
-            raw_id = str(row.item_id).strip() if row.item_id else ""
-            raw_name = str(row.product)
+            raw_name = str(row.product) if row.product else ""
             units = int(row.units) if row.units else 0
             revenue = int(row.revenue) if row.revenue else 0
             
             clean_raw = normalize_product_name(raw_name)
-            match_found = False
+            target_official_name = None
             
-            if raw_id and raw_id in id_to_name:
-                grouped_data[id_to_name[raw_id]]["count"] += units
-                grouped_data[id_to_name[raw_id]]["revenue"] += revenue
-                match_found = True
-            
-            if not match_found and clean_raw:
+            if clean_raw:
                 for official in official_products:
-                    if f" {official['clean']} " in f" {clean_raw} ":
-                        grouped_data[official['name']]["count"] += units
-                        grouped_data[official['name']]["revenue"] += revenue
-                        match_found = True
+                    if official['clean'] in clean_raw:
+                        target_official_name = official['name']
                         break 
+                
+                if not target_official_name:
+                    match_clean = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
+                    if match_clean:
+                        official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
+                        if official_entry:
+                            target_official_name = official_entry['name']
             
-            if not match_found and clean_raw:
-                match_clean = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.70)
-                if match_clean:
-                    official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
-                    if official_entry:
-                        grouped_data[official_entry['name']]["count"] += units
-                        grouped_data[official_entry['name']]["revenue"] += revenue
-                        match_found = True
-            
-            if not match_found:
+            if not target_official_name:
                 clean_display = clean_raw.title() if clean_raw else "[Unknown Product]"
-                display_name = f"[Uncategorized] {clean_display}"
-                grouped_data[display_name]["count"] += units
-                grouped_data[display_name]["revenue"] += revenue
+                target_official_name = f"[Uncategorized] {clean_display}"
+
+            grouped_data[target_official_name]["count"] += units
+            grouped_data[target_official_name]["revenue"] += revenue
 
     output_rows = []
     for name, data in grouped_data.items():
-        output_rows.append({"name": name, "count": data["count"], "revenue": data["revenue"]}) 
+        output_rows.append({
+            "name": name, 
+            "units": data["count"], 
+            "revenue": data["revenue"]
+        }) 
+        
     output_rows.sort(key=lambda x: int(float(x['revenue'])), reverse=True)
     
     return output_rows
