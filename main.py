@@ -1384,16 +1384,25 @@ def get_visits_by_clinic():
     return fetch_visit_plans_by_clinic()
 
 @app.get("/transactions/customers")
-def get_transactions_by_customer():
-    return fetch_transaction_report_by_customer_name()
+def get_transactions_by_customer(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    return fetch_transaction_report_by_customer_name(start_date, end_date)
 
 @app.get("/transactions/salesmen")
-def get_transactions_by_salesman():
-    return fetch_deduplicated_sales_report()
+def get_transactions_by_salesman(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    return fetch_deduplicated_sales_report(start_date, end_date)
 
 @app.get("/transactions/products")
-def get_transactions_by_product():
-    return fetch_transaction_report_by_product()
+def get_transactions_by_product(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    return fetch_transaction_report_by_product(start_date, end_date)
 
 @app.get("/transactions/levels")
 def get_transactions_by_level(levels: Optional[str] = Query(None, description="Comma-separated levels (DC, TS, NULL)")):
