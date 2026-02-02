@@ -637,47 +637,6 @@ def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: 
     final_start, final_end = get_default_dates(start_date, end_date)
 
     query = text("""
-        SELECT cust_id, COUNT(*) as c 
-        FROM transactions 
-        WHERE cust_id IS NOT NULL 
-            AND cust_id != '' 
-            AND inv_date BETWEEN :start AND :end
-        GROUP BY cust_id
-    """)
-    
-    cid_counts = defaultdict(int)
-    map_cid_to_name = load_acc_cid_map()
-    
-    with engine.connect() as conn:
-        for row in conn.execute(query, {"start": final_start, "end": final_end}):
-            raw_cid = str(row.cust_id)
-            count = row.c
-            std_cid = standardize_customer_id(raw_cid)
-            cid_counts[std_cid] += count
-
-    output_rows = []
-    for k, v in cid_counts.items():
-        display_name = map_cid_to_name.get(k, "Unknown / Not in DB")
-        output_rows.append({"id": k, "name": display_name, "count": v})
-
-    output_rows.sort(key=lambda x: x['count'], reverse=True)
-    
-    return output_rows
-
-@mcp.tool()
-def fetch_transaction_report_by_custname_salesname(start_date: str = None, end_date: str = None) -> List[Dict]:
-    """
-    Retrieves transaction counts grouped by standardized Customer ID (CID) and Salesman.
-    Can be filtered by a date range.
-
-    Parameters:
-        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
-        end_date (str, optional): YYYY-MM-DD. Defaults to today.
-    """
-    final_start, final_end = get_default_dates(start_date, end_date)
-
-    # Added salesman_name to SELECT and GROUP BY
-    query = text("""
         SELECT cust_id, salesman_name, COUNT(*) as c 
         FROM transactions 
         WHERE cust_id IS NOT NULL 
@@ -686,20 +645,19 @@ def fetch_transaction_report_by_custname_salesname(start_date: str = None, end_d
         GROUP BY cust_id, salesman_name
     """)
     
-    # Structure: {CID: {salesman_name: count, ...}} 
-    # Or simplified to list of rows if unique combos are desired
+    map_cid_to_name = load_acc_cid_map()
     
     results = []
-    map_cid_to_name = load_acc_cid_map()
     
     with engine.connect() as conn:
         for row in conn.execute(query, {"start": final_start, "end": final_end}):
             raw_cid = str(row.cust_id)
             raw_salesman = str(row.salesman_name) if row.salesman_name else "Unknown"
             count = row.c
+            
             std_cid = standardize_customer_id(raw_cid)
             
-            display_name = map_cid_to_name.get(std_cid, "Unknown / Not in DB")
+            display_name = map_cid_to_name.get(std_cid, f"Unknown ({std_cid})")
             
             results.append({
                 "id": std_cid,
@@ -708,7 +666,7 @@ def fetch_transaction_report_by_custname_salesname(start_date: str = None, end_d
                 "count": count
             })
 
-    # Sort by count descending
+    # 3. Sort by Count Descending
     results.sort(key=lambda x: x['count'], reverse=True)
     
     return results
@@ -1435,13 +1393,6 @@ def get_transactions_by_customer(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
     return fetch_transaction_report_by_customer_name(start_date, end_date)
-
-@app.get("/transactions/test")
-def get_transactions_test(
-    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
-):
-    return fetch_transaction_report_by_custname_salesname(start_date, end_date)
 
 @app.get("/transactions/salesmen")
 def get_transactions_by_salesman(
