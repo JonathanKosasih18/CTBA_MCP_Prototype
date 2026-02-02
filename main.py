@@ -665,6 +665,55 @@ def fetch_transaction_report_by_customer_name(start_date: str = None, end_date: 
     return output_rows
 
 @mcp.tool()
+def fetch_transaction_report_by_custname_salesname(start_date: str = None, end_date: str = None) -> List[Dict]:
+    """
+    Retrieves transaction counts grouped by standardized Customer ID (CID) and Salesman.
+    Can be filtered by a date range.
+
+    Parameters:
+        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
+        end_date (str, optional): YYYY-MM-DD. Defaults to today.
+    """
+    final_start, final_end = get_default_dates(start_date, end_date)
+
+    # Added salesman_name to SELECT and GROUP BY
+    query = text("""
+        SELECT cust_id, salesman_name, COUNT(*) as c 
+        FROM transactions 
+        WHERE cust_id IS NOT NULL 
+            AND cust_id != '' 
+            AND inv_date BETWEEN :start AND :end
+        GROUP BY cust_id, salesman_name
+    """)
+    
+    # Structure: {CID: {salesman_name: count, ...}} 
+    # Or simplified to list of rows if unique combos are desired
+    
+    results = []
+    map_cid_to_name = load_acc_cid_map()
+    
+    with engine.connect() as conn:
+        for row in conn.execute(query, {"start": final_start, "end": final_end}):
+            raw_cid = str(row.cust_id)
+            raw_salesman = str(row.salesman_name) if row.salesman_name else "Unknown"
+            count = row.c
+            std_cid = standardize_customer_id(raw_cid)
+            
+            display_name = map_cid_to_name.get(std_cid, "Unknown / Not in DB")
+            
+            results.append({
+                "id": std_cid,
+                "name": display_name,
+                "salesman": raw_salesman,
+                "count": count
+            })
+
+    # Sort by count descending
+    results.sort(key=lambda x: x['count'], reverse=True)
+    
+    return results
+
+@mcp.tool()
 def fetch_visit_plans_by_salesman() -> List[Dict]:
     """
     Retrieves the count of 'Planned Visits' grouped by Salesman.
@@ -1386,6 +1435,13 @@ def get_transactions_by_customer(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
     return fetch_transaction_report_by_customer_name(start_date, end_date)
+
+@app.get("/transactions/test")
+def get_transactions_test(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    return fetch_transaction_report_by_custname_salesname(start_date, end_date)
 
 @app.get("/transactions/salesmen")
 def get_transactions_by_salesman(

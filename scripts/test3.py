@@ -14,8 +14,8 @@ db = mysql.connector.connect(
 )
 
 mycursor = db.cursor()
-mycursor.execute('SELECT daya_beli, COUNT(*) FROM customers GROUP BY daya_beli')
+mycursor.execute('SELECT c.custname, SUM(t.amount), t.salesman_name FROM transactions t JOIN acc_customers a ON t.cust_id = a.cid JOIN customers c ON a.custname = c.custname GROUP BY c.custname, t.salesman_name')
 results = mycursor.fetchall()
 
-for (daya_beli, count) in results:
-    print(f'Daya Beli: {daya_beli}, Count: {count}')
+for row in results:
+    print(row)
