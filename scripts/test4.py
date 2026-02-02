@@ -14,4 +14,6 @@ db = mysql.connector.connect(
 )
 
 mycursor = db.cursor()
-mycursor.execute('DROP TABLE IF EXISTS acc_customers')
+mycursor.execute('SELECT SUM(qty) as total_qty, SUM(amount) as total_revenue FROM transactions WHERE inv_date BETWEEN "2024-10-01" AND "2024-09-30"')
+result = mycursor.fetchone()
+print(f"Total Quantity: {result[0]}, Total Revenue: {result[1]}")
