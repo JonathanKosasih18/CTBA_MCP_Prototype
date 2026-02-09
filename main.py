@@ -1184,73 +1184,85 @@ def fetch_customer_count_by_location() -> List[Dict]:
     return results
 
 @mcp.tool()
-def fetch_transactions_by_location(location_name: str, location_type: str) -> Union[List[Dict], Dict]:
+def fetch_transactions_by_location(location_name: str = None, location_type: str = None) -> Union[List[Dict], Dict]:
     """
     Displays transaction counts for specific locations grouped by product.
     
     Parameters:
-        location_name (str): Comma-separated names (e.g., "Surabaya, Jakarta Barat").
-        location_type (str): Must be 'city' or 'province'.
+        location_name (str, optional): Comma-separated names (e.g., "Surabaya, Jakarta Barat").
+        location_type (str, optional): Must be 'city' or 'province'.
+        
+    Behavior:
+        If parameters are missing or empty, returns transaction data for ALL provinces.
     """
-    # 1. Validate Type
-    clean_type = location_type.strip().lower()
-    if clean_type not in ['city', 'province']:
-        return {"error": f"Invalid location_type '{location_type}'. Must be 'city' or 'province'."}
+    # 1. Handle Default Case (Empty Input)
+    if not location_name or not location_type:
+        group_col = "a.province"
+        where_clause = "WHERE a.province IS NOT NULL AND a.province != ''"
+        params = {}
+    else:
+        # 2. Validate Type
+        clean_type = location_type.strip().lower()
+        if clean_type not in ['city', 'province']:
+            return {"error": f"Invalid location_type '{location_type}'. Must be 'city' or 'province'."}
 
-    # 2. Resolve Names
-    target_locations = resolve_locations_from_db(location_name, clean_type)
-    
-    if not target_locations:
-        return {"error": f"Could not find any {clean_type} matching '{location_name}'. Please check spelling."}
+        # 3. Resolve Names
+        target_locations = resolve_locations_from_db(location_name, clean_type)
+        
+        if not target_locations:
+            return {"error": f"Could not find any {clean_type} matching '{location_name}'. Please check spelling."}
 
-    # 3. Build Query
-    col_name = "a.city" if clean_type == "city" else "a.province"
-    
+        # 4. Build Query for Specific Locations
+        group_col = "a.city" if clean_type == "city" else "a.province"
+        where_clause = f"WHERE {group_col} IN :loc_list"
+        params = {"loc_list": tuple(target_locations)}
+
+    # 5. Build Final SQL
     sql = f"""
-        SELECT {col_name} as loc_name, t.product, SUM(t.qty) as units 
+        SELECT {group_col} as loc_name, t.product, SUM(t.qty) as units 
         FROM transactions t
         JOIN acc_customers a ON t.cust_id = a.cid
-        WHERE {col_name} IN :loc_list
-        GROUP BY {col_name}, t.product
+        {where_clause}
+        GROUP BY {group_col}, t.product
     """
 
-    # 4. Process Data & Normalize Products
+    # 6. Process Data & Normalize Products
     id_to_name, official_products = load_product_directory()
-    official_products.sort(key=lambda x: len(x['clean']), reverse=True) # Longest first
+    official_products.sort(key=lambda x: len(x['clean']), reverse=True)
     target_clean_names = [x['clean'] for x in official_products]
     
     grouped_data = defaultdict(lambda: {"count": 0})
 
     with engine.connect() as conn:
-        # Pass tuple for IN clause
-        result = conn.execute(text(sql).bindparams(loc_list=tuple(target_locations)))
-        
+        if params and 'loc_list' in params:
+            result = conn.execute(text(sql).bindparams(loc_list=params['loc_list']))
+        else:
+            result = conn.execute(text(sql))
+            
         for row in result:
             loc = str(row.loc_name)
             raw_prod = str(row.product)
             qty = int(row.units)
             
-            # --- Robust Product Matching ---
+            # --- Product Matching Logic ---
             clean_raw = normalize_product_name(raw_prod)
             target_product = None
             
             if clean_raw:
-                # Strategy 1: Forward Containment ("Angel Aligner Pro" -> "Angel Aligner")
-                # Because we sorted official_products by length DESC, this catches specific versions first
+                # Forward Containment
                 for official in official_products:
                     if official['clean'] in clean_raw:
                         target_product = official['name']
                         break
                 
-                # Strategy 2: Reverse Containment ("Aligner" -> "Angel Aligner")
-                # Fixes the issue where generic names became [Uncategorized]
+                # Reverse Containment
                 if not target_product:
                     for official in official_products:
                         if clean_raw in official['clean']:
                             target_product = official['name']
                             break
                 
-                # Strategy 3: Fuzzy Match
+                # Fuzzy Match
                 if not target_product:
                     match = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
                     if match:
@@ -1266,7 +1278,7 @@ def fetch_transactions_by_location(location_name: str, location_type: str) -> Un
             key = (loc, target_product)
             grouped_data[key]["count"] += qty
 
-    # 5. Format Output
+    # 7. Format Output
     output = []
     for (loc, prod), data in grouped_data.items():
         output.append({
@@ -1390,8 +1402,8 @@ def get_customers_by_location():
 
 @app.get("/transactions/location")
 def get_transactions_by_location(
-    location_name: str = Query(..., description="Name of the location (e.g. Surabaya)"),
-    location_type: str = Query(..., description="Type: 'city' or 'province'")
+    location_name: Optional[str] = Query(None, description="Name of the location (e.g. Surabaya)"),
+    location_type: Optional[str] = Query(None, description="Type: 'city' or 'province'")
 ):
     return fetch_transactions_by_location(location_name, location_type)
 
