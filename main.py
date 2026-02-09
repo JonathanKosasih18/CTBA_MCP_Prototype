@@ -1187,14 +1187,10 @@ def fetch_customer_count_by_location() -> List[Dict]:
 def fetch_transactions_by_location(location_name: str = None, location_type: str = None) -> Union[List[Dict], Dict]:
     """
     Displays transaction counts for specific locations grouped by product.
-    
-    Parameters:
-        location_name (str, optional): Comma-separated names (e.g., "Surabaya, Jakarta Barat").
-        location_type (str, optional): Must be 'city' or 'province'.
-        
-    Behavior:
-        If parameters are missing or empty, returns transaction data for ALL provinces.
+    Returns 0 counts for requested locations that have no transaction history.
     """
+    target_locations = [] # Stores the specific DB locations we are looking for
+
     # 1. Handle Default Case (Empty Input)
     if not location_name or not location_type:
         group_col = "a.province"
@@ -1207,6 +1203,7 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
             return {"error": f"Invalid location_type '{location_type}'. Must be 'city' or 'province'."}
 
         # 3. Resolve Names
+        # This gives us the exact string used in the DB (e.g., "Bogor", "Jakarta Barat")
         target_locations = resolve_locations_from_db(location_name, clean_type)
         
         if not target_locations:
@@ -1226,12 +1223,13 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
         GROUP BY {group_col}, t.product
     """
 
-    # 6. Process Data & Normalize Products
+    # 6. Process Data
     id_to_name, official_products = load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
     target_clean_names = [x['clean'] for x in official_products]
     
     grouped_data = defaultdict(lambda: {"count": 0})
+    found_locations = set() # Track which locations actually had data
 
     with engine.connect() as conn:
         if params and 'loc_list' in params:
@@ -1240,9 +1238,11 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
             result = conn.execute(text(sql))
             
         for row in result:
-            loc = str(row.loc_name)
+            loc = str(row.loc_name).strip()
             raw_prod = str(row.product)
             qty = int(row.units)
+            
+            found_locations.add(loc) # Mark this location as "having data"
             
             # --- Product Matching Logic ---
             clean_raw = normalize_product_name(raw_prod)
@@ -1280,12 +1280,26 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
 
     # 7. Format Output
     output = []
+    
+    # A. Add found data
     for (loc, prod), data in grouped_data.items():
         output.append({
             "location": loc,
             "product_name": prod,
             "transaction_count": data["count"]
         })
+        
+    # B. Add Zero entries for missing targets
+    # If the user asked for specific locations (target_locations is set)
+    if target_locations:
+        for target in target_locations:
+            # If the requested target was NOT found in the SQL results
+            if target not in found_locations:
+                output.append({
+                    "location": target,
+                    "product_name": "-",
+                    "transaction_count": 0
+                })
         
     output.sort(key=lambda x: (x['location'], x['transaction_count']), reverse=True)
     return output
