@@ -499,6 +499,74 @@ def fetch_product_stats_in_period(product_name_clean: str, start_date: str, end_
         
     return qty, revenue
 
+def get_location_type_and_validate(locations: List[str]):
+    """
+    Determines if the input list consists of Cities or Provinces.
+    Enforces that all inputs must be of the same type.
+    Returns: ('city'|'province'|'mixed'|'unknown', normalized_values)
+    """
+    if not locations:
+        return 'empty', []
+
+    # clean inputs
+    clean_inputs = [x.strip().title() for x in locations if x.strip()]
+    if not clean_inputs:
+        return 'empty', []
+
+    # 1. Fetch known locations from DB
+    known_cities = set()
+    known_provinces = set()
+    
+    with engine.connect() as conn:
+        # Fetch Cities
+        res_city = conn.execute(text("SELECT DISTINCT city FROM acc_customers WHERE city IS NOT NULL"))
+        for row in res_city:
+            known_cities.add(str(row.city).strip().title())
+            
+        # Fetch Provinces
+        res_prov = conn.execute(text("SELECT DISTINCT province FROM acc_customers WHERE province IS NOT NULL"))
+        for row in res_prov:
+            known_provinces.add(str(row.province).strip().title())
+
+    # 2. Check Matches
+    is_city = []
+    is_province = []
+    
+    final_values = []
+
+    for loc in clean_inputs:
+        # exact match check
+        if loc in known_cities:
+            is_city.append(True)
+            final_values.append(loc)
+        elif loc in known_provinces:
+            is_province.append(True)
+            final_values.append(loc)
+        else:
+            # Fuzzy fallback
+            match_city = difflib.get_close_matches(loc, list(known_cities), n=1, cutoff=0.85)
+            match_prov = difflib.get_close_matches(loc, list(known_provinces), n=1, cutoff=0.85)
+            
+            if match_city:
+                is_city.append(True)
+                final_values.append(match_city[0])
+            elif match_prov:
+                is_province.append(True)
+                final_values.append(match_prov[0])
+            else:
+                # Assuming unknown is a typo, we keep it as is, but tag as unknown
+                final_values.append(loc)
+
+    # 3. Determine Type
+    if any(is_city) and any(is_province):
+        return 'mixed', final_values
+    if any(is_city):
+        return 'city', final_values
+    if any(is_province):
+        return 'province', final_values
+        
+    return 'unknown', final_values
+
 # ==========================================
 # 4. MCP TOOLS
 # ==========================================
@@ -1105,6 +1173,142 @@ def analyze_product_sales_growth(
         }
     }
 
+@mcp.tool()
+def fetch_customer_count_by_location() -> List[Dict]:
+    """
+    Retrieves customer counts grouped by City and Province from acc_customers.
+    """
+    query = text("""
+        SELECT city, province, COUNT(*) as c 
+        FROM acc_customers 
+        GROUP BY city, province
+    """)
+    
+    results = []
+    with engine.connect() as conn:
+        for row in conn.execute(query):
+            city = str(row.city).strip() if row.city else "Unspecified"
+            province = str(row.province).strip() if row.province else "Unspecified"
+            
+            # Formatting to handle empty strings as Unspecified
+            if city == "": city = "Unspecified"
+            if province == "": province = "Unspecified"
+            
+            results.append({
+                "city": city,
+                "province": province,
+                "count": row.c
+            })
+            
+    # Sort by Province then City
+    results.sort(key=lambda x: (x['province'], x['count']), reverse=True)
+    return results
+
+@mcp.tool()
+def fetch_transactions_by_location(location_query: str = None) -> Union[List[Dict], Dict]:
+    """
+    Displays transaction counts for a specific location grouped by product.
+    Can handle multiple locations of the same type (comma-separated).
+    If no location is provided, returns data grouped by Province.
+    """
+    # 1. Parse Input
+    target_locations = []
+    if location_query:
+        target_locations = [x.strip() for x in location_query.split(',') if x.strip()]
+    
+    # 2. Determine Location Type
+    loc_type, cleaned_locations = get_location_type_and_validate(target_locations)
+    
+    if loc_type == 'mixed':
+        return {"error": "You can only enter multiple locations of the same type (e.g., all cities or all provinces)."}
+    
+    # 3. Build Query Based on Type
+    # If empty or unknown, default to All Provinces
+    group_col = "a.province"
+    where_clause = ""
+    params = {}
+    
+    if loc_type == 'city':
+        group_col = "a.city"
+        where_clause = "WHERE a.city IN :locs"
+        params = {"locs": cleaned_locations}
+    elif loc_type == 'province':
+        group_col = "a.province"
+        where_clause = "WHERE a.province IN :locs"
+        params = {"locs": cleaned_locations}
+    else:
+        # Default case: No filter, group by Province
+        group_col = "a.province"
+        where_clause = "WHERE a.province IS NOT NULL AND a.province != ''"
+        params = {}
+
+    sql = f"""
+        SELECT {group_col} as location_name, t.product, SUM(t.qty) as units 
+        FROM transactions t
+        JOIN acc_customers a ON t.cust_id = a.cid
+        {where_clause}
+        GROUP BY {group_col}, t.product
+    """
+    
+    # 4. Execute and Normalize Products (Reusing logic from fetch_transaction_report_by_product)
+    id_to_name, official_products = load_product_directory()
+    official_products.sort(key=lambda x: len(x['clean']), reverse=True)
+    target_clean_names = [x['clean'] for x in official_products]
+    
+    grouped_data = defaultdict(lambda: {"count": 0})
+    
+    with engine.connect() as conn:
+        # Handle IN clause for lists
+        if params and 'locs' in params:
+            # SqlAlchemy text() with IN clause requires passing tuple/list directly
+            result = conn.execute(text(sql).bindparams(locs=tuple(cleaned_locations)))
+        else:
+            result = conn.execute(text(sql))
+            
+        for row in result:
+            loc_name = str(row.location_name).strip()
+            raw_prod = str(row.product)
+            units = int(row.units)
+            
+            # --- Product Normalization Logic ---
+            clean_raw = normalize_product_name(raw_prod)
+            target_official_name = None
+            
+            if clean_raw:
+                for official in official_products:
+                    if official['clean'] in clean_raw:
+                        target_official_name = official['name']
+                        break 
+                if not target_official_name:
+                    match_clean = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
+                    if match_clean:
+                        official_entry = next((x for x in official_products if x['clean'] == match_clean), None)
+                        if official_entry:
+                            target_official_name = official_entry['name']
+            
+            if not target_official_name:
+                clean_display = clean_raw.title() if clean_raw else "[Unknown Product]"
+                target_official_name = f"[Uncategorized] {clean_display}"
+            # -----------------------------------
+
+            # Key: Location + Product
+            key = (loc_name, target_official_name)
+            grouped_data[key]["count"] += units
+
+    # 5. Format Output
+    output = []
+    for (loc, prod), data in grouped_data.items():
+        output.append({
+            "location": loc,
+            "product_name": prod,
+            "transaction_count": data["count"]
+        })
+        
+    # Sort by Location then Count
+    output.sort(key=lambda x: (x['location'], x['transaction_count']), reverse=True)
+    
+    return output
+
 # ==========================================
 # 5. FASTAPI INTEGRATION & REST ENDPOINTS
 # ==========================================
@@ -1210,6 +1414,16 @@ def get_product_growth_analysis(
     p2_start: str, p2_end: str
 ):
     return analyze_product_sales_growth(product, p1_start, p1_end, p2_start, p2_end)
+
+@app.get("/customers/location")
+def get_customers_by_location():
+    return fetch_customer_count_by_location()
+
+@app.get("/transactions/location")
+def get_transactions_by_location(
+    location: Optional[str] = Query(None, description="Comma-separated cities or provinces")
+):
+    return fetch_transactions_by_location(location)
 
 @app.get("/tools")
 async def list_tools():
