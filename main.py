@@ -1187,8 +1187,8 @@ def fetch_customer_count_by_location() -> List[Dict]:
     results = []
     with engine.connect() as conn:
         for row in conn.execute(query):
-            province = str(row.province).strip() if row.province else "Unspecified"
-            if province == "": province = "Unspecified"
+            province = str(row.province).strip() if row.province else "UNSPECIFIED"
+            if province == "": province = "UNSPECIFIED"
             
             results.append({
                 "province": province,
