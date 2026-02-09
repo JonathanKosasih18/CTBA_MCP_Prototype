@@ -502,60 +502,78 @@ def fetch_product_stats_in_period(product_name_clean: str, start_date: str, end_
 def get_location_type_and_validate(locations: List[str]):
     """
     Determines if the input list consists of Cities or Provinces.
-    Enforces that all inputs must be of the same type.
-    Returns: ('city'|'province'|'mixed'|'unknown', normalized_values)
+    Matches inputs to actual DB values to ensure SQL query success.
+    Returns: ('city'|'province'|'mixed'|'unknown', normalized_db_values)
     """
     if not locations:
         return 'empty', []
 
-    # clean inputs
-    clean_inputs = [x.strip().title() for x in locations if x.strip()]
-    if not clean_inputs:
-        return 'empty', []
-
-    # 1. Fetch known locations from DB
-    known_cities = set()
-    known_provinces = set()
+    # 1. Fetch known locations from DB and build a Normalization Map
+    # Map format: {"JAKARTA BARAT": "Jakarta Barat", "DKI JAKARTA": "DKI Jakarta"}
+    city_map = {}
+    province_map = {}
     
     with engine.connect() as conn:
         # Fetch Cities
         res_city = conn.execute(text("SELECT DISTINCT city FROM acc_customers WHERE city IS NOT NULL"))
         for row in res_city:
-            known_cities.add(str(row.city).strip().title())
+            original = str(row.city).strip()
+            if original:
+                city_map[original.upper()] = original # Key is UPPER, Value is Original
             
         # Fetch Provinces
         res_prov = conn.execute(text("SELECT DISTINCT province FROM acc_customers WHERE province IS NOT NULL"))
         for row in res_prov:
-            known_provinces.add(str(row.province).strip().title())
+            original = str(row.province).strip()
+            if original:
+                province_map[original.upper()] = original
 
-    # 2. Check Matches
+    # 2. Process Inputs
     is_city = []
     is_province = []
-    
     final_values = []
+    
+    known_cities_keys = list(city_map.keys())
+    known_provinces_keys = list(province_map.keys())
 
-    for loc in clean_inputs:
-        # exact match check
-        if loc in known_cities:
+    for loc in locations:
+        clean_input = loc.strip().upper()
+        if not clean_input: continue
+        
+        match_found = False
+        
+        # A. Exact Match Check
+        if clean_input in city_map:
             is_city.append(True)
-            final_values.append(loc)
-        elif loc in known_provinces:
+            final_values.append(city_map[clean_input])
+            match_found = True
+        elif clean_input in province_map:
             is_province.append(True)
-            final_values.append(loc)
-        else:
-            # Fuzzy fallback
-            match_city = difflib.get_close_matches(loc, list(known_cities), n=1, cutoff=0.85)
-            match_prov = difflib.get_close_matches(loc, list(known_provinces), n=1, cutoff=0.85)
+            final_values.append(province_map[clean_input])
+            match_found = True
             
-            if match_city:
+        # B. Fuzzy Match Check (if exact fails)
+        if not match_found:
+            # Try City Fuzzy
+            # cutoff=0.8 handles small typos like "jawatimur" -> "JAWA TIMUR"
+            fuzzy_city = difflib.get_close_matches(clean_input, known_cities_keys, n=1, cutoff=0.8)
+            if fuzzy_city:
                 is_city.append(True)
-                final_values.append(match_city[0])
-            elif match_prov:
-                is_province.append(True)
-                final_values.append(match_prov[0])
+                final_values.append(city_map[fuzzy_city[0]])
+                match_found = True
             else:
-                # Assuming unknown is a typo, we keep it as is, but tag as unknown
-                final_values.append(loc)
+                # Try Province Fuzzy
+                fuzzy_prov = difflib.get_close_matches(clean_input, known_provinces_keys, n=1, cutoff=0.8)
+                if fuzzy_prov:
+                    is_province.append(True)
+                    final_values.append(province_map[fuzzy_prov[0]])
+                    match_found = True
+        
+        # C. No Match Found
+        if not match_found:
+            # If we can't match it to the DB, the SQL query will return nothing anyway.
+            # We treat it as unknown/typo but pass it through just in case.
+            final_values.append(loc)
 
     # 3. Determine Type
     if any(is_city) and any(is_province):
@@ -564,6 +582,8 @@ def get_location_type_and_validate(locations: List[str]):
         return 'city', final_values
     if any(is_province):
         return 'province', final_values
+    if not final_values:
+        return 'empty', []
         
     return 'unknown', final_values
 
@@ -1218,21 +1238,25 @@ def fetch_transactions_by_location(location_query: str = None) -> Union[List[Dic
         return {"error": "You can only enter multiple locations of the same type (e.g., all cities or all provinces)."}
     
     # 3. Build Query Based on Type
-    # If empty or unknown, default to All Provinces
     group_col = "a.province"
     where_clause = ""
     params = {}
     
     if loc_type == 'city':
         group_col = "a.city"
+        # Use clean DB values for reliable matching
         where_clause = "WHERE a.city IN :locs"
         params = {"locs": cleaned_locations}
     elif loc_type == 'province':
         group_col = "a.province"
         where_clause = "WHERE a.province IN :locs"
         params = {"locs": cleaned_locations}
+    elif loc_type == 'unknown' and location_query:
+        # User typed something, but we couldn't match it to any DB entry.
+        # Instead of showing ALL provinces, we should show nothing or an error.
+        return {"error": f"Could not find any location matching '{location_query}'. Please check spelling."}
     else:
-        # Default case: No filter, group by Province
+        # Default case: No filter (loc_type == 'empty'), group by Province
         group_col = "a.province"
         where_clause = "WHERE a.province IS NOT NULL AND a.province != ''"
         params = {}
@@ -1245,7 +1269,7 @@ def fetch_transactions_by_location(location_query: str = None) -> Union[List[Dic
         GROUP BY {group_col}, t.product
     """
     
-    # 4. Execute and Normalize Products (Reusing logic from fetch_transaction_report_by_product)
+    # 4. Execute and Normalize Products
     id_to_name, official_products = load_product_directory()
     official_products.sort(key=lambda x: len(x['clean']), reverse=True)
     target_clean_names = [x['clean'] for x in official_products]
@@ -1265,15 +1289,26 @@ def fetch_transactions_by_location(location_query: str = None) -> Union[List[Dic
             raw_prod = str(row.product)
             units = int(row.units)
             
-            # --- Product Normalization Logic ---
+            # --- IMPROVED Product Normalization Logic ---
             clean_raw = normalize_product_name(raw_prod)
             target_official_name = None
             
             if clean_raw:
+                # 1. Standard Containment: "Angel Aligner Pro" contains "Angel Aligner"
                 for official in official_products:
                     if official['clean'] in clean_raw:
                         target_official_name = official['name']
                         break 
+                
+                # 2. Reverse Containment (NEW): "Aligner" is contained in "Angel Aligner"
+                # This catches generic/short inputs. We pick the first match (longest official name).
+                if not target_official_name:
+                    for official in official_products:
+                        if clean_raw in official['clean']:
+                            target_official_name = official['name']
+                            break
+
+                # 3. Fuzzy Match
                 if not target_official_name:
                     match_clean = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
                     if match_clean:
