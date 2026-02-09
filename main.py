@@ -1176,32 +1176,27 @@ def analyze_product_sales_growth(
 @mcp.tool()
 def fetch_customer_count_by_location() -> List[Dict]:
     """
-    Retrieves customer counts grouped by City and Province from acc_customers.
+    Retrieves customer counts grouped by Province only (to reduce dataset size).
     """
     query = text("""
-        SELECT city, province, COUNT(*) as c 
+        SELECT province, COUNT(*) as c 
         FROM acc_customers 
-        GROUP BY city, province
+        GROUP BY province
     """)
     
     results = []
     with engine.connect() as conn:
         for row in conn.execute(query):
-            city = str(row.city).strip() if row.city else "Unspecified"
             province = str(row.province).strip() if row.province else "Unspecified"
-            
-            # Formatting to handle empty strings as Unspecified
-            if city == "": city = "Unspecified"
             if province == "": province = "Unspecified"
             
             results.append({
-                "city": city,
                 "province": province,
                 "count": row.c
             })
             
-    # Sort by Province then City
-    results.sort(key=lambda x: (x['province'], x['count']), reverse=True)
+    # Sort by Count Descending (Most populated provinces first)
+    results.sort(key=lambda x: x['count'], reverse=True)
     return results
 
 @mcp.tool()
