@@ -1304,6 +1304,116 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
     output.sort(key=lambda x: (x['location'], x['transaction_count']), reverse=True)
     return output
 
+@mcp.tool()
+def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict], Dict]:
+    """
+    Retrieves transaction counts grouped by Location (City/Province) and Product 
+    for a SPECIFIC salesman.
+    """
+    # 1. Identify Target Salesman
+    target_id, official_name = find_salesman_id_by_name(salesman_name)
+    
+    if not target_id:
+        return {"error": f"Could not find salesman matching '{salesman_name}'. Please check the name."}
+
+    # 2. Load Reference Maps (for resolving row-by-row identity and products)
+    id_map, code_map, digit_map, name_list = load_official_users_map()
+    
+    id_to_name, official_products = load_product_directory()
+    official_products.sort(key=lambda x: len(x['clean']), reverse=True)
+    target_clean_names = [x['clean'] for x in official_products]
+
+    # 3. Query Data
+    # We fetch ALL transaction aggregates first, then filter in Python for specific salesman ID
+    # This is necessary because 'transactions.salesman_name' is messy and can't be filtered strictly in SQL
+    query = text("""
+        SELECT a.city, a.province, t.product, t.salesman_name, SUM(t.qty) as units
+        FROM transactions t
+        JOIN acc_customers a ON t.cust_id = a.cid
+        WHERE t.salesman_name IS NOT NULL
+        GROUP BY a.city, a.province, t.product, t.salesman_name
+    """)
+
+    grouped_data = defaultdict(lambda: {"count": 0})
+
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        
+        for row in result:
+            # A. Check Salesman Identity
+            raw_salesman = str(row.salesman_name).strip()
+            # Split multipart names like "Wilson / Budi" if necessary, 
+            # but usually for reports we check if the row *belongs* to the target.
+            
+            # Logic: If the row's salesman string resolves to our Target ID, we count it.
+            # We split by slash just in case it's a shared transaction, counting it for both if requested.
+            parts = re.split(r'[/\&,]', raw_salesman)
+            is_match = False
+            for part in parts:
+                resolved_id = resolve_salesman_identity(part.strip(), code_map, digit_map, name_list)
+                if resolved_id == target_id:
+                    is_match = True
+                    break
+            
+            if not is_match:
+                continue
+
+            # B. Extract Data
+            city = str(row.city).strip() if row.city else "Unspecified"
+            province = str(row.province).strip() if row.province else "Unspecified"
+            if city == "": city = "Unspecified"
+            if province == "": province = "Unspecified"
+            
+            raw_prod = str(row.product)
+            units = int(row.units)
+
+            # C. Product Normalization (Robust)
+            clean_raw = normalize_product_name(raw_prod)
+            target_product = None
+            
+            if clean_raw:
+                # Forward Containment
+                for official in official_products:
+                    if official['clean'] in clean_raw:
+                        target_product = official['name']
+                        break
+                # Reverse Containment
+                if not target_product:
+                    for official in official_products:
+                        if clean_raw in official['clean']:
+                            target_product = official['name']
+                            break
+                # Fuzzy
+                if not target_product:
+                    match = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
+                    if match:
+                        entry = next((x for x in official_products if x['clean'] == match), None)
+                        if entry: target_product = entry['name']
+
+            if not target_product:
+                display = clean_raw.title() if clean_raw else "[Unknown]"
+                target_product = f"[Uncategorized] {display}"
+
+            # D. Aggregate
+            # Key: (Province, City, Product)
+            key = (province, city, target_product)
+            grouped_data[key]["count"] += units
+
+    # 4. Format Output
+    output = []
+    for (prov, city, prod), data in grouped_data.items():
+        output.append({
+            "province": prov,
+            "city": city,
+            "product_name": prod,
+            "transaction_count": data["count"]
+        })
+
+    # Sort: Province -> City -> Count DESC
+    output.sort(key=lambda x: (x['province'], x['city'], -x['transaction_count']))
+    
+    return output
+
 # ==========================================
 # 5. FASTAPI INTEGRATION & REST ENDPOINTS
 # ==========================================
@@ -1379,6 +1489,23 @@ def get_transactions_by_product(
 def get_transactions_by_level(levels: Optional[str] = Query(None, description="Comma-separated levels (DC, TS, NULL)")):
     return fetch_transaction_counts_by_user_level(levels)
 
+@app.get("/transactions/location")
+def get_transactions_by_location(
+    location_name: Optional[str] = Query(None, description="Name of the location (e.g. Surabaya)"),
+    location_type: Optional[str] = Query(None, description="Type: 'city' or 'province'")
+):
+    return fetch_transactions_by_location(location_name, location_type)
+
+@app.get("/sales/location")
+def get_sales_by_location_for_salesman(
+    salesman_name: str = Query(..., description="Name of the salesman")
+):
+    return fetch_sales_by_location_for_salesman(salesman_name)
+
+@app.get("/customers/location")
+def get_customers_by_location():
+    return fetch_customer_count_by_location()
+
 @app.get("/reports/salesmen")
 def get_reports_by_salesman():
     return fetch_report_counts_by_salesman()
@@ -1409,17 +1536,6 @@ def get_product_growth_analysis(
     p2_start: str, p2_end: str
 ):
     return analyze_product_sales_growth(product, p1_start, p1_end, p2_start, p2_end)
-
-@app.get("/customers/location")
-def get_customers_by_location():
-    return fetch_customer_count_by_location()
-
-@app.get("/transactions/location")
-def get_transactions_by_location(
-    location_name: Optional[str] = Query(None, description="Name of the location (e.g. Surabaya)"),
-    location_type: Optional[str] = Query(None, description="Type: 'city' or 'province'")
-):
-    return fetch_transactions_by_location(location_name, location_type)
 
 @app.get("/tools")
 async def list_tools():
