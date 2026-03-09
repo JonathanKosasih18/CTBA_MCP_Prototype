@@ -171,8 +171,9 @@ def load_name_to_cid_map():
 
 def get_rbac_filter(email: Optional[str]) -> dict:
     """
-    Takes an email, looks up the user's role and username (e.g., AM210, DC332), 
-    and generates an SQL WHERE clause and parameter dictionary based on area rules.
+    Takes an email, looks up the user's role and username (e.g., AM210, DC332).
+    Generates an SQL WHERE clause targeting ONLY 't.salesman_name' to prevent
+    pulling in other salesmen who sold to the same customers.
     """
     if not email:
         return {"clause": "", "params": {}}
@@ -189,75 +190,91 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     username = str(user.username).strip().upper()
     full_name = str(user.name).strip()
     
-    # 1. Admin -> See Everything
+    # 1. Admin / Superadmin -> See Everything
     if level in ['ADMIN', 'SUPERADMIN']:
         return {"clause": "", "params": {}}
-        
-    allowed_usernames = []
-    allowed_names = []
-    
-    # 2. AM (Area Manager) -> See their own sales + DCs/TSs in their area
+
+    allowed_users = [] # Will hold dicts: {"code": "DC321", "name": "Arjatna Putri"}
+
+    # 2. Area Manager (AM) -> See their own sales + DCs/TSs in their 2-digit area
     if level == 'AM' or username.startswith('AM'):
-        # Extract the area prefix (First 2 digits of the 3-digit code)
-        area_match = re.search(r'(\d{2})\d', username)
-        if area_match:
-            area_prefix = area_match.group(1)
+        # Extract the area prefix (First 2 digits of the 3-digit code. E.g., 'AM210' -> '21')
+        match = re.search(r'^AM(\d{2})\d', username)
+        if match:
+            prefix = match.group(1)
+            # Fetch AM and all DCs/TSs in this area from the users table
+            area_query = text("""
+                SELECT username, name 
+                FROM users 
+                WHERE username = :am_code 
+                   OR username LIKE :dc_pattern 
+                   OR username LIKE :ts_pattern
+            """)
             with engine.connect() as conn:
-                # Fetch all DC/TS/AM users in this specific area
-                area_users = conn.execute(
-                    text("SELECT username, name FROM users WHERE username LIKE :am OR username LIKE :dc OR username LIKE :ts"),
-                    {"am": f"AM{area_prefix}%", "dc": f"DC{area_prefix}%", "ts": f"TS{area_prefix}%"}
-                )
-                for r in area_users:
-                    if r.username: allowed_usernames.append(str(r.username).strip().upper())
-                    if r.name: allowed_names.append(str(r.name).strip())
+                result = conn.execute(area_query, {
+                    "am_code": username,
+                    "dc_pattern": f"DC{prefix}%",
+                    "ts_pattern": f"TS{prefix}%"
+                })
+                for row in result:
+                    allowed_users.append({
+                        "code": str(row.username).strip().upper(),
+                        "name": str(row.name).strip()
+                    })
         else:
-            # Fallback if AM format is non-standard
-            allowed_usernames.append(username)
-            allowed_names.append(full_name)
-            
-    # 3. DC (Dental Consultant) / TS (Telesales) -> See only their own Sales
-    elif level in ['DC', 'TS'] or username.startswith('DC') or username.startswith('TS'):
-        allowed_usernames.append(username)
-        allowed_names.append(full_name)
-        
+            # Fallback if AM code format is non-standard
+            allowed_users.append({"code": username, "name": full_name})
+
+    # 3. Dental Consultant (DC) / Telesales (TS) -> See only their own Sales
+    elif username.startswith('DC') or username.startswith('TS'):
+        allowed_users.append({"code": username, "name": full_name})
+
     else:
         return {"clause": " AND 1=0", "params": {}}
 
-    # --- Construct LIKE clauses for t.salesman_name ---
-    like_clauses = []
+    # --- Construct robust LIKE clauses for t.salesman_name ---
+    if not allowed_users:
+        return {"clause": " AND 1=0", "params": {}}
+
+    clauses = []
     params = {}
     
-    # Add exact Usernames (e.g., DC321, AM210)
-    for i, u_code in enumerate(allowed_usernames):
-        if u_code:
-            like_clauses.append(f"t.salesman_name LIKE :code_{i}")
-            params[f"code_{i}"] = f"%{u_code}%"
+    for idx, u in enumerate(allowed_users):
+        code = u["code"]
+        name = u["name"]
         
-    # Add Names (First name or full name to catch partial inputs like "Arjatna" instead of "Arjatna Putri")
-    for i, n in enumerate(allowed_names):
-        if not n: continue
+        # Rule A: Match by exact Username Code (e.g., '%DC321%')
+        code_key = f"code_{idx}"
+        clauses.append(f"t.salesman_name LIKE :{code_key}")
+        params[code_key] = f"%{code}%"
         
-        # Clean up titles for better matching
-        clean_n = clean_salesman_name(n).strip()
-        if not clean_n: clean_n = n
-        
-        # Use first name if it's longer than 3 characters to avoid false matches (like "M Budi")
-        first_name = clean_n.split()[0]
-        if len(first_name) > 3:
-            like_clauses.append(f"t.salesman_name LIKE :fname_{i}")
-            params[f"fname_{i}"] = f"%{first_name}%"
-        else:
-            like_clauses.append(f"t.salesman_name LIKE :name_{i}")
-            params[f"name_{i}"] = f"%{clean_n}%"
+        # Rule B: Match by the 3-digit number (e.g., '%321%') -> Catches "321 Arjatna"
+        num_match = re.search(r'\d+', code)
+        if num_match:
+            num_key = f"num_{idx}"
+            clauses.append(f"t.salesman_name LIKE :{num_key}")
+            params[num_key] = f"%{num_match.group()}%"
+            
+        # Rule C: Match by First Name (e.g., '%Arjatna%') -> Catches "Arjatna Putri"
+        if name:
+            clean_n = clean_salesman_name(name).strip()
+            first_name = clean_n.split()[0] if clean_n else name.split()[0]
+            
+            # Only use first name if it's 3+ chars long to avoid false matches (like "M Budi")
+            if len(first_name) >= 3:
+                name_key = f"name_{idx}"
+                clauses.append(f"t.salesman_name LIKE :{name_key}")
+                params[name_key] = f"%{first_name}%"
+            else:
+                # Use full name if first name is too short
+                name_key = f"name_{idx}"
+                clauses.append(f"t.salesman_name LIKE :{name_key}")
+                params[name_key] = f"%{clean_n}%"
 
-    # Failsafe: if no clauses were built, deny access
-    if not like_clauses:
-        return {"clause": " AND 1=0", "params": {}}
-        
     # Combine all rules with OR
-    clause = " AND (" + " OR ".join(like_clauses) + ")"
-    return {"clause": clause, "params": params}
+    final_clause = " AND (" + " OR ".join(clauses) + ")"
+    
+    return {"clause": final_clause, "params": params}
 
 # --- DATABASE LOADERS ---
 
