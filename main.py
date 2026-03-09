@@ -173,8 +173,9 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     """
     Takes an email, looks up the user's role and username, 
     and generates an SQL WHERE clause and parameter dictionary.
+    Focuses on AM, DC, TS, and Admin roles. Uses t.salesman_name for filtering.
     """
-    # If no email is provided (e.g., testing via direct API), allow all (or change to "AND 1=0" to strictly deny)
+    # If no email is provided (e.g., testing via direct API), allow all
     if not email:
         return {"clause": "", "params": {}}
 
@@ -188,32 +189,42 @@ def get_rbac_filter(email: Optional[str]) -> dict:
         return {"clause": " AND 1=0", "params": {}}
 
     level = str(user.level).strip().upper() if user.level else ""
-    username = str(user.username).strip()
+    username = str(user.username).strip().upper()
     
     # --- RBAC RULES ---
-    # 1. NSM (National Sales Manager) or Admin -> See Everything
-    if level in ['NSM', 'ADMIN', 'SUPERADMIN']:
+    
+    # 1. Admin -> See Everything
+    if level in ['ADMIN', 'SUPERADMIN']:
         return {"clause": "", "params": {}}
         
-    # 2. RM (Regional Manager) -> See only their Region
-    elif level in ['RM', 'RSM']:
-        # Assuming rsmcode maps to RM's username
-        return {"clause": " AND a.rsmcode = :rbac_user", "params": {"rbac_user": username}}
-        
-    # 3. AM (Area Manager) -> See only their Area
+    # 2. AM (Area Manager) -> See their own sales AND the sales of DCs in their area
     elif level == 'AM':
-        # Assuming amcode maps to AM's username
-        return {"clause": " AND a.amcode = :rbac_user", "params": {"rbac_user": username}}
-        
-    # 4. DC (Dental Consultant) -> See only their own Sales
+        # Extract the 2-digit area prefix from the 3-digit AM code (e.g., AM210 -> 21)
+        match = re.search(r'AM(\d{2})\d', username)
+        if match:
+            area_prefix = match.group(1) # e.g., '21'
+            return {
+                "clause": " AND (t.salesman_name LIKE :exact_am OR t.salesman_name LIKE :dc_pattern)",
+                "params": {
+                    "exact_am": f"%{username}%", 
+                    "dc_pattern": f"%DC{area_prefix}%"
+                }
+            }
+        else:
+            # Fallback if username format is unexpected (just match their own name)
+            return {
+                "clause": " AND t.salesman_name LIKE :rbac_name",
+                "params": {"rbac_name": f"%{username}%"}
+            }
+            
+    # 3. DC (Dental Consultant) / TS (Tele Sales) -> See only their own Sales
     elif level in ['DC', 'TS']:
-        # Check if they are the DC of the clinic, OR if their username is in the transaction's salesman_name
         return {
-            "clause": " AND (a.dccode = :rbac_user OR t.salesman_name LIKE :rbac_name)", 
-            "params": {"rbac_user": username, "rbac_name": f"%{username}%"}
+            "clause": " AND t.salesman_name LIKE :rbac_name", 
+            "params": {"rbac_name": f"%{username}%"}
         }
         
-    # 5. Unknown role -> Deny access
+    # 4. Unknown role (or removed roles like RM/NSM) -> Deny access
     else:
         return {"clause": " AND 1=0", "params": {}}
 
