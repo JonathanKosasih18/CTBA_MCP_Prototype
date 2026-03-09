@@ -57,6 +57,7 @@ mcp = FastMCP(
 def normalize_name(text: str) -> str:
     if not text: return ""
     core = text.lower()
+    core = re.sub(r'\d+', ' ', core)
     core = re.sub(r'\bsp[\s\.]*ort[a-z]*\b', '', core)
     core = re.sub(r'\bm[\s\.]*kes\b', '', core)
     core = re.sub(r'\bcert[\s\.]*ort[a-z]*\b', '', core)
@@ -291,9 +292,17 @@ def find_salesman_id_by_name(name_query: str):
     Returns: (id, name) or (None, None)
     """
     id_map, code_map, digit_map, name_list = load_official_users_map()
+
     resolved_id = resolve_salesman_identity(name_query, code_map, digit_map, name_list)
     if resolved_id:
         return resolved_id, id_map[resolved_id]['name']
+    
+    clean_query = clean_salesman_name(name_query)
+    if clean_query and len(clean_query) > 3: # Only do this for names longer than 3 chars to avoid false positives
+        for u in name_list:
+            # Check if query is inside the official name (or vice versa)
+            if clean_query in u['name'] or u['name'] in clean_query:
+                return u['id'], id_map[u['id']]['name']
     return None, None
 
 def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
