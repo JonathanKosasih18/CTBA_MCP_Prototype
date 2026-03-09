@@ -308,64 +308,86 @@ def find_salesman_id_by_name(name_query: str):
 def fetch_single_salesman_data(salesman_name: str) -> Dict[str, Any]:
     """
     Retrieves transaction count and visit notes for a single salesman.
-    Returns a Dictionary object.
+    Handles both official users and unregistered salesmen (transactions only).
     """
-    # 1. Identify Salesman
+    # 1. Identify Official Salesman (if they exist in 'users' table)
     target_id, official_name = find_salesman_id_by_name(salesman_name)
     
-    if not target_id:
-        return {"error": f"Could not find salesman '{salesman_name}'."}
-    
-    # 2. Get Transaction Count
     id_map, code_map, digit_map, name_list = load_official_users_map()
+    
     transaction_count = 0
+    visit_notes = []
+    total_visits = 0
     
     query_trans = text("SELECT salesman_name, COUNT(*) as c FROM transactions GROUP BY salesman_name")
-    with engine.connect() as conn:
-        for row in conn.execute(query_trans):
-            parts = re.split(r'[/\&,]', str(row.salesman_name))
-            for part in parts:
-                part = part.strip()
-                if not part: continue
-                resolved = resolve_salesman_identity(part, code_map, digit_map, name_list)
-                if resolved == target_id:
-                    transaction_count += row.c
-
-    # 3. Count Total Visits (use COUNT on reports, not len of notes)
-    visit_notes = []
-    visit_count_query = text("""
-        SELECT COUNT(r.id) as c
-        FROM reports r
-        JOIN plans p ON r.idplan = p.id
-        WHERE p.userid = :uid
-    """)
-    with engine.connect() as conn:
-        row = conn.execute(visit_count_query, {"uid": target_id}).fetchone()
-        total_visits = int(row.c) if row and row.c else 0
-
-    # 4. Get Recent Visit Notes (limited to 50)
-    query_notes = text("""
-        SELECT r.visitnote 
-        FROM reports r
-        JOIN plans p ON r.idplan = p.id
-        WHERE p.userid = :uid
-        ORDER BY r.date DESC
-        LIMIT 30
-    """)
     
-    with engine.connect() as conn:
-        result = conn.execute(query_notes, {"uid": target_id})
-        for row in result:
-            if row.visitnote and str(row.visitnote).strip():
-                visit_notes.append(str(row.visitnote).strip())
+    # === PATH A: OFFICIAL USER ===
+    if target_id:
+        with engine.connect() as conn:
+            for row in conn.execute(query_trans):
+                parts = re.split(r'[/\&,]', str(row.salesman_name))
+                for part in parts:
+                    part = part.strip()
+                    if not part: continue
+                    resolved = resolve_salesman_identity(part, code_map, digit_map, name_list)
+                    if resolved == target_id:
+                        transaction_count += row.c
+
+        # Count Total Visits
+        visit_count_query = text("""
+            SELECT COUNT(r.id) as c
+            FROM reports r
+            JOIN plans p ON r.idplan = p.id
+            WHERE p.userid = :uid
+        """)
+        with engine.connect() as conn:
+            row = conn.execute(visit_count_query, {"uid": target_id}).fetchone()
+            total_visits = int(row.c) if row and row.c else 0
+
+        # Get Recent Visit Notes
+        query_notes = text("""
+            SELECT r.visitnote 
+            FROM reports r
+            JOIN plans p ON r.idplan = p.id
+            WHERE p.userid = :uid
+            ORDER BY r.date DESC
+            LIMIT 30
+        """)
+        with engine.connect() as conn:
+            result = conn.execute(query_notes, {"uid": target_id})
+            for row in result:
+                if row.visitnote and str(row.visitnote).strip():
+                    visit_notes.append(str(row.visitnote).strip())
+
+    # === PATH B: UNREGISTERED SALESMAN (Transactions Only) ===
+    else:
+        clean_query = clean_salesman_name(salesman_name)
+        with engine.connect() as conn:
+            for row in conn.execute(query_trans):
+                raw_s_name = str(row.salesman_name)
+                parts = re.split(r'[/\&,]', raw_s_name)
+                for part in parts:
+                    clean_part = clean_salesman_name(part)
+                    # Check if query matches the cleaned transaction name
+                    if clean_query and (clean_query in clean_part or clean_part in clean_query or get_fuzzy_match(clean_query, [clean_part], 0.85)):
+                        transaction_count += row.c
+                        if not official_name:
+                            # Use the raw DB string as their "Official Name"
+                            official_name = part.strip().title()
+        
+        # If still nothing is found, return error
+        if transaction_count == 0:
+            return {"error": f"Could not find salesman '{salesman_name}' in users or transactions tables."}
+        
+        target_id = "UNREGISTERED"
 
     # --- RETURN DICTIONARY ---
     return {
         "id": target_id,
-        "name": official_name,
+        "name": official_name if official_name else salesman_name.title(),
         "total_transactions": transaction_count,
-        "total_visits": total_visits,
-        "recent_notes": visit_notes
+        "total_visits": total_visits,  # Will be 0 for unregistered
+        "recent_notes": visit_notes    # Will be empty for unregistered
     }
 
 def fetch_best_performers_logic(start_date: str, end_date: str) -> Dict[str, Any]:
@@ -1317,15 +1339,12 @@ def fetch_transactions_by_location(location_name: str = None, location_type: str
 def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict], Dict]:
     """
     Retrieves transaction counts grouped by Location (City/Province) and Product 
-    for a SPECIFIC salesman.
+    for a SPECIFIC salesman (Official or Unregistered).
     """
     # 1. Identify Target Salesman
     target_id, official_name = find_salesman_id_by_name(salesman_name)
     
-    if not target_id:
-        return {"error": f"Could not find salesman matching '{salesman_name}'. Please check the name."}
-
-    # 2. Load Reference Maps (for resolving row-by-row identity and products)
+    # 2. Load Reference Maps
     id_map, code_map, digit_map, name_list = load_official_users_map()
     
     id_to_name, official_products = load_product_directory()
@@ -1333,8 +1352,6 @@ def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict]
     target_clean_names = [x['clean'] for x in official_products]
 
     # 3. Query Data
-    # We fetch ALL transaction aggregates first, then filter in Python for specific salesman ID
-    # This is necessary because 'transactions.salesman_name' is messy and can't be filtered strictly in SQL
     query = text("""
         SELECT a.city, a.province, t.product, t.salesman_name, SUM(t.qty) as units
         FROM transactions t
@@ -1344,28 +1361,37 @@ def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict]
     """)
 
     grouped_data = defaultdict(lambda: {"count": 0})
+    clean_query = clean_salesman_name(salesman_name)
+    found_any = False
 
     with engine.connect() as conn:
         result = conn.execute(query)
         
         for row in result:
-            # A. Check Salesman Identity
             raw_salesman = str(row.salesman_name).strip()
-            # Split multipart names like "Wilson / Budi" if necessary, 
-            # but usually for reports we check if the row *belongs* to the target.
-            
-            # Logic: If the row's salesman string resolves to our Target ID, we count it.
-            # We split by slash just in case it's a shared transaction, counting it for both if requested.
             parts = re.split(r'[/\&,]', raw_salesman)
             is_match = False
-            for part in parts:
-                resolved_id = resolve_salesman_identity(part.strip(), code_map, digit_map, name_list)
-                if resolved_id == target_id:
-                    is_match = True
-                    break
+            
+            # A. Check Salesman Identity
+            if target_id:
+                # Official User Logic
+                for part in parts:
+                    resolved_id = resolve_salesman_identity(part.strip(), code_map, digit_map, name_list)
+                    if resolved_id == target_id:
+                        is_match = True
+                        break
+            else:
+                # Unregistered User Logic (String Matching)
+                for part in parts:
+                    clean_part = clean_salesman_name(part)
+                    if clean_query and (clean_query in clean_part or clean_part in clean_query or get_fuzzy_match(clean_query, [clean_part], 0.85)):
+                        is_match = True
+                        break
             
             if not is_match:
                 continue
+
+            found_any = True
 
             # B. Extract Data
             city = str(row.city).strip() if row.city else "Unspecified"
@@ -1376,23 +1402,20 @@ def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict]
             raw_prod = str(row.product)
             units = int(row.units)
 
-            # C. Product Normalization (Robust)
+            # C. Product Normalization
             clean_raw = normalize_product_name(raw_prod)
             target_product = None
             
             if clean_raw:
-                # Forward Containment
                 for official in official_products:
                     if official['clean'] in clean_raw:
                         target_product = official['name']
                         break
-                # Reverse Containment
                 if not target_product:
                     for official in official_products:
                         if clean_raw in official['clean']:
                             target_product = official['name']
                             break
-                # Fuzzy
                 if not target_product:
                     match = get_fuzzy_match(clean_raw, target_clean_names, threshold=0.75)
                     if match:
@@ -1404,9 +1427,11 @@ def fetch_sales_by_location_for_salesman(salesman_name: str) -> Union[List[Dict]
                 target_product = f"[Uncategorized] {display}"
 
             # D. Aggregate
-            # Key: (Province, City, Product)
             key = (province, city, target_product)
             grouped_data[key]["count"] += units
+
+    if not found_any:
+        return {"error": f"Could not find any transactions for salesman '{salesman_name}'."}
 
     # 4. Format Output
     output = []
