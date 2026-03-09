@@ -276,6 +276,8 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     
     return {"clause": final_clause, "params": params}
 
+    # BERHASIL DIKIT
+
 # --- DATABASE LOADERS ---
 
 def load_official_users_map():
