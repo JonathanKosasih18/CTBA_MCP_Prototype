@@ -171,9 +171,8 @@ def load_name_to_cid_map():
 
 def get_rbac_filter(email: Optional[str]) -> dict:
     """
-    Takes an email, looks up the user's role and username, 
-    and generates an SQL WHERE clause and parameter dictionary.
-    Focuses on AM, DC, TS, and Admin roles. Uses t.salesman_name for filtering.
+    Takes an email, looks up the user's role and username (e.g., AM210, DC332), 
+    and generates an SQL WHERE clause and parameter dictionary based on area rules.
     """
     # If no email is provided (e.g., testing via direct API), allow all
     if not email:
@@ -189,7 +188,7 @@ def get_rbac_filter(email: Optional[str]) -> dict:
         return {"clause": " AND 1=0", "params": {}}
 
     level = str(user.level).strip().upper() if user.level else ""
-    username = str(user.username).strip().upper()
+    username = str(user.username).strip().upper()  # E.g., 'AM210' or 'DC332'
     
     # --- RBAC RULES ---
     
@@ -197,34 +196,52 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     if level in ['ADMIN', 'SUPERADMIN']:
         return {"clause": "", "params": {}}
         
-    # 2. AM (Area Manager) -> See their own sales AND the sales of DCs in their area
-    elif level == 'AM':
-        # Extract the 2-digit area prefix from the 3-digit AM code (e.g., AM210 -> 21)
-        match = re.search(r'AM(\d{2})\d', username)
-        if match:
-            area_prefix = match.group(1) # e.g., '21'
+    # 2. AM (Area Manager) -> See their own sales + DCs/TSs in their area
+    elif level == 'AM' or username.startswith('AM'):
+        # Extract the area prefix (First 2 digits of the 3-digit code)
+        # Example: 'AM210' -> captures '21'
+        area_match = re.search(r'(\d{2})\d', username)
+        
+        if area_match:
+            area_prefix = area_match.group(1)
+            # This clause checks if the customer belongs to the AM or any DC/TS in their area,
+            # OR if the transaction was directly attributed to the AM or any DC/TS in their area.
             return {
-                "clause": " AND (t.salesman_name LIKE :exact_am OR t.salesman_name LIKE :dc_pattern)",
+                "clause": """ AND (
+                    a.amcode = :username OR 
+                    a.dccode LIKE :dc_code_like OR 
+                    a.tscode LIKE :ts_code_like OR 
+                    t.salesman_name LIKE :exact_like OR 
+                    t.salesman_name LIKE :dc_like OR 
+                    t.salesman_name LIKE :ts_like
+                )""",
                 "params": {
-                    "exact_am": f"%{username}%", 
-                    "dc_pattern": f"%DC{area_prefix}%"
+                    "username": username,
+                    "exact_like": f"%{username}%",           # E.g., '%AM210%'
+                    "dc_code_like": f"DC{area_prefix}%",    # E.g., 'DC21%'
+                    "ts_code_like": f"TS{area_prefix}%",    # E.g., 'TS21%'
+                    "dc_like": f"%DC{area_prefix}%",        # E.g., '%DC21%'
+                    "ts_like": f"%TS{area_prefix}%"         # E.g., '%TS21%'
                 }
             }
         else:
-            # Fallback if username format is unexpected (just match their own name)
+            # Fallback just in case an AM's username doesn't have the expected numbers
             return {
-                "clause": " AND t.salesman_name LIKE :rbac_name",
-                "params": {"rbac_name": f"%{username}%"}
+                "clause": " AND (a.amcode = :username OR t.salesman_name LIKE :exact_like)",
+                "params": {"username": username, "exact_like": f"%{username}%"}
             }
             
-    # 3. DC (Dental Consultant) / TS (Tele Sales) -> See only their own Sales
-    elif level in ['DC', 'TS']:
+    # 3. DC (Dental Consultant) / TS (Telesales) -> See only their own Sales
+    elif level in ['DC', 'TS'] or username.startswith('DC') or username.startswith('TS'):
+        # Check whether they are a TS or DC to query the right acc_customers column
+        code_col = "a.tscode" if username.startswith('TS') else "a.dccode"
+        
         return {
-            "clause": " AND t.salesman_name LIKE :rbac_name", 
-            "params": {"rbac_name": f"%{username}%"}
+            "clause": f" AND ({code_col} = :username OR t.salesman_name LIKE :exact_like)", 
+            "params": {"username": username, "exact_like": f"%{username}%"}
         }
         
-    # 4. Unknown role (or removed roles like RM/NSM) -> Deny access
+    # 4. Unknown role -> Deny access securely
     else:
         return {"clause": " AND 1=0", "params": {}}
 
