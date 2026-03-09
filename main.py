@@ -174,7 +174,6 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     Takes an email, looks up the user's role and username (e.g., AM210, DC332), 
     and generates an SQL WHERE clause and parameter dictionary based on area rules.
     """
-    # If no email is provided (e.g., testing via direct API), allow all
     if not email:
         return {"clause": "", "params": {}}
 
@@ -183,67 +182,82 @@ def get_rbac_filter(email: Optional[str]) -> dict:
     with engine.connect() as conn:
         user = conn.execute(query, {"email": email}).fetchone()
         
-    # If user doesn't exist in the DB, deny access
     if not user:
         return {"clause": " AND 1=0", "params": {}}
 
     level = str(user.level).strip().upper() if user.level else ""
-    username = str(user.username).strip().upper()  # E.g., 'AM210' or 'DC332'
-    
-    # --- RBAC RULES ---
+    username = str(user.username).strip().upper()
+    full_name = str(user.name).strip()
     
     # 1. Admin -> See Everything
     if level in ['ADMIN', 'SUPERADMIN']:
         return {"clause": "", "params": {}}
         
+    allowed_usernames = []
+    allowed_names = []
+    
     # 2. AM (Area Manager) -> See their own sales + DCs/TSs in their area
-    elif level == 'AM' or username.startswith('AM'):
+    if level == 'AM' or username.startswith('AM'):
         # Extract the area prefix (First 2 digits of the 3-digit code)
-        # Example: 'AM210' -> captures '21'
         area_match = re.search(r'(\d{2})\d', username)
-        
         if area_match:
             area_prefix = area_match.group(1)
-            # This clause checks if the customer belongs to the AM or any DC/TS in their area,
-            # OR if the transaction was directly attributed to the AM or any DC/TS in their area.
-            return {
-                "clause": """ AND (
-                    a.amcode = :username OR 
-                    a.dccode LIKE :dc_code_like OR 
-                    a.tscode LIKE :ts_code_like OR 
-                    t.salesman_name LIKE :exact_like OR 
-                    t.salesman_name LIKE :dc_like OR 
-                    t.salesman_name LIKE :ts_like
-                )""",
-                "params": {
-                    "username": username,
-                    "exact_like": f"%{username}%",           # E.g., '%AM210%'
-                    "dc_code_like": f"DC{area_prefix}%",    # E.g., 'DC21%'
-                    "ts_code_like": f"TS{area_prefix}%",    # E.g., 'TS21%'
-                    "dc_like": f"%DC{area_prefix}%",        # E.g., '%DC21%'
-                    "ts_like": f"%TS{area_prefix}%"         # E.g., '%TS21%'
-                }
-            }
+            with engine.connect() as conn:
+                # Fetch all DC/TS/AM users in this specific area
+                area_users = conn.execute(
+                    text("SELECT username, name FROM users WHERE username LIKE :am OR username LIKE :dc OR username LIKE :ts"),
+                    {"am": f"AM{area_prefix}%", "dc": f"DC{area_prefix}%", "ts": f"TS{area_prefix}%"}
+                )
+                for r in area_users:
+                    if r.username: allowed_usernames.append(str(r.username).strip().upper())
+                    if r.name: allowed_names.append(str(r.name).strip())
         else:
-            # Fallback just in case an AM's username doesn't have the expected numbers
-            return {
-                "clause": " AND (a.amcode = :username OR t.salesman_name LIKE :exact_like)",
-                "params": {"username": username, "exact_like": f"%{username}%"}
-            }
+            # Fallback if AM format is non-standard
+            allowed_usernames.append(username)
+            allowed_names.append(full_name)
             
     # 3. DC (Dental Consultant) / TS (Telesales) -> See only their own Sales
     elif level in ['DC', 'TS'] or username.startswith('DC') or username.startswith('TS'):
-        # Check whether they are a TS or DC to query the right acc_customers column
-        code_col = "a.tscode" if username.startswith('TS') else "a.dccode"
+        allowed_usernames.append(username)
+        allowed_names.append(full_name)
         
-        return {
-            "clause": f" AND ({code_col} = :username OR t.salesman_name LIKE :exact_like)", 
-            "params": {"username": username, "exact_like": f"%{username}%"}
-        }
-        
-    # 4. Unknown role -> Deny access securely
     else:
         return {"clause": " AND 1=0", "params": {}}
+
+    # --- Construct LIKE clauses for t.salesman_name ---
+    like_clauses = []
+    params = {}
+    
+    # Add exact Usernames (e.g., DC321, AM210)
+    for i, u_code in enumerate(allowed_usernames):
+        if u_code:
+            like_clauses.append(f"t.salesman_name LIKE :code_{i}")
+            params[f"code_{i}"] = f"%{u_code}%"
+        
+    # Add Names (First name or full name to catch partial inputs like "Arjatna" instead of "Arjatna Putri")
+    for i, n in enumerate(allowed_names):
+        if not n: continue
+        
+        # Clean up titles for better matching
+        clean_n = clean_salesman_name(n).strip()
+        if not clean_n: clean_n = n
+        
+        # Use first name if it's longer than 3 characters to avoid false matches (like "M Budi")
+        first_name = clean_n.split()[0]
+        if len(first_name) > 3:
+            like_clauses.append(f"t.salesman_name LIKE :fname_{i}")
+            params[f"fname_{i}"] = f"%{first_name}%"
+        else:
+            like_clauses.append(f"t.salesman_name LIKE :name_{i}")
+            params[f"name_{i}"] = f"%{clean_n}%"
+
+    # Failsafe: if no clauses were built, deny access
+    if not like_clauses:
+        return {"clause": " AND 1=0", "params": {}}
+        
+    # Combine all rules with OR
+    clause = " AND (" + " OR ".join(like_clauses) + ")"
+    return {"clause": clause, "params": params}
 
 # --- DATABASE LOADERS ---
 
