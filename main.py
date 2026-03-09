@@ -169,54 +169,6 @@ def load_name_to_cid_map():
                     name_to_cid[clean_name] = std_cid
     return name_to_cid
 
-def get_rbac_filter(email: Optional[str]) -> dict:
-    """
-    Takes an email, looks up the user's role and username, 
-    and generates an SQL WHERE clause and parameter dictionary.
-    """
-    # If no email is provided (e.g., testing via direct API), allow all (or change to "AND 1=0" to strictly deny)
-    if not email:
-        return {"clause": "", "params": {}}
-
-    query = text("SELECT username, name, level FROM users WHERE email = :email LIMIT 1")
-    
-    with engine.connect() as conn:
-        user = conn.execute(query, {"email": email}).fetchone()
-        
-    # If user doesn't exist in the DB, deny access
-    if not user:
-        return {"clause": " AND 1=0", "params": {}}
-
-    level = str(user.level).strip().upper() if user.level else ""
-    username = str(user.username).strip()
-    
-    # --- RBAC RULES ---
-    # 1. NSM (National Sales Manager) or Admin -> See Everything
-    if level in ['NSM', 'ADMIN', 'SUPERADMIN']:
-        return {"clause": "", "params": {}}
-        
-    # 2. RM (Regional Manager) -> See only their Region
-    elif level in ['RM', 'RSM']:
-        # Assuming rsmcode maps to RM's username
-        return {"clause": " AND a.rsmcode = :rbac_user", "params": {"rbac_user": username}}
-        
-    # 3. AM (Area Manager) -> See only their Area
-    elif level == 'AM':
-        # Assuming amcode maps to AM's username
-        return {"clause": " AND a.amcode = :rbac_user", "params": {"rbac_user": username}}
-        
-    # 4. DC (Dental Consultant) -> See only their own Sales
-    elif level in ['DC', 'TS']:
-        # Check if they are the DC of the clinic, OR if their username is in the transaction's salesman_name
-        return {
-            "clause": " AND (a.dccode = :rbac_user OR t.salesman_name LIKE :rbac_name)", 
-            "params": {"rbac_user": username, "rbac_name": f"%{username}%"}
-        }
-        
-    # 5. Unknown role -> Deny access
-    else:
-        return {"clause": " AND 1=0", "params": {}}
-
 # --- DATABASE LOADERS ---
 
 def load_official_users_map():
@@ -707,26 +659,32 @@ def fetch_deduplicated_visit_report() -> List[Dict]:
     return final_rows[:50]
 
 @mcp.tool()
-def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None, requesting_user: str = None) -> List[Dict]:
+def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None) -> List[Dict]:
+    """
+    Retrieves a consolidated Sales Performance Report grouped by Salesman.
+    Can be filtered by a date range.
+
+    Parameters:
+        start_date (str, optional): YYYY-MM-DD. Defaults to '2015-01-01'.
+        end_date (str, optional): YYYY-MM-DD. Defaults to today.
+    """
+    # 1. Apply Date Logic
     final_start, final_end = get_default_dates(start_date, end_date)
+
     id_map, code_map, digit_map, name_list = load_official_users_map()
-    rbac = get_rbac_filter(requesting_user)
     
-    query = text(f"""
-        SELECT t.salesman_name, COUNT(*) as c 
-        FROM transactions t
-        LEFT JOIN acc_customers a ON t.cust_id = a.cid
-        WHERE t.inv_date BETWEEN :start AND :end {rbac['clause']}
-        GROUP BY t.salesman_name
+    query = text("""
+        SELECT salesman_name, COUNT(*) as c 
+        FROM transactions 
+        WHERE inv_date BETWEEN :start AND :end
+        GROUP BY salesman_name
     """)
     
     official_counts = defaultdict(int)
     unmatched_counts = defaultdict(int)
-    params = {"start": final_start, "end": final_end}
-    params.update(rbac["params"])
     
     with engine.connect() as conn:
-        for row in conn.execute(query.bindparams(**params)):
+        for row in conn.execute(query, {"start": final_start, "end": final_end}):
             raw_field = str(row.salesman_name)
             count = row.c
             parts = re.split(r'[/\&,]', raw_field)
@@ -734,10 +692,12 @@ def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None
                 part = part.strip()
                 if not part: continue
                 resolved_id = resolve_salesman_identity(part, code_map, digit_map, name_list)
-                if resolved_id: official_counts[resolved_id] += count
+                if resolved_id: 
+                    official_counts[resolved_id] += count
                 else:
                     core_unmatched = clean_salesman_name(part)
-                    unmatched_counts[(core_unmatched or part.strip()).title()] += count
+                    if not core_unmatched: core_unmatched = part.strip()
+                    unmatched_counts[core_unmatched.title()] += count
 
     output_rows = []
     for user_id, total in official_counts.items():
@@ -745,7 +705,10 @@ def fetch_deduplicated_sales_report(start_date: str = None, end_date: str = None
         if user: output_rows.append({"user_id": user['code'], "name": user['name'], "count": total})
     for name, total in unmatched_counts.items():
         output_rows.append({"user_id": "[NO CODE]", "name": name, "count": total})
+    
     output_rows.sort(key=lambda x: x['count'], reverse=True)
+    
+    # --- RETURN LIST[DICT] ---
     return output_rows
 
 @mcp.tool()
@@ -1544,9 +1507,10 @@ def get_transactions_by_customer(
 
 @app.get("/transactions/salesmen")
 def get_transactions_by_salesman(
-    start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), requesting_user: Optional[str] = Query(None)
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
-    return fetch_deduplicated_sales_report(start_date, end_date, requesting_user)
+    return fetch_deduplicated_sales_report(start_date, end_date)
 
 @app.get("/transactions/products")
 def get_transactions_by_product(
