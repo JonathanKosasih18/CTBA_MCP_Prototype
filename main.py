@@ -1544,10 +1544,9 @@ def get_transactions_by_customer(
 
 @app.get("/transactions/salesmen")
 def get_transactions_by_salesman(
-    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+    start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), requesting_user: Optional[str] = Query(None)
 ):
-    return fetch_deduplicated_sales_report(start_date, end_date)
+    return fetch_deduplicated_sales_report(start_date, end_date, requesting_user)
 
 @app.get("/transactions/products")
 def get_transactions_by_product(
